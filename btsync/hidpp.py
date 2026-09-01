@@ -511,31 +511,8 @@ class HIDPPMaster:
         feat_idx = dev.change_host_feature_index or 0x09
         success = False
 
-        # --- SPEED OPTIMIZATION 1: Sub-millisecond direct Linux /dev/hidraw writes ---
-        # Direct kernel write takes ~0.2ms, bypassing all Python/subprocess overhead
-        if sys.platform.startswith("linux") and dev.all_paths:
-            candidate_nodes = [p.decode("utf-8") for p in dev.all_paths if p and p.startswith(b"/dev/hidraw")]
-            if candidate_nodes:
-                for dev_node in candidate_nodes:
-                    for d_idx in (dev.device_index, 0x00, 0xFF):
-                        try:
-                            # Pre-packed 20-byte HID++ 2.0 Change Host packet
-                            pkt = bytes([0x11, d_idx, feat_idx, 0x10, channel_index] + [0x00] * 15)
-                            fd = os.open(dev_node, os.O_WRONLY | os.O_NONBLOCK)
-                            try:
-                                os.write(fd, pkt)
-                                success = True
-                            finally:
-                                os.close(fd)
-                        except Exception:
-                            pass
-                if success:
-                    print(f"[HID++] Instant direct hidraw write for '{dev.name}' -> Channel {target_channel} (0.2ms)")
-                    return True
-
-        # --- SPEED OPTIMIZATION 2: Fast Solaar CLI invocation with cached name ---
+        # --- METHOD 1: Fast Solaar CLI invocation with cached name (Linux) ---
         if sys.platform.startswith("linux") and self._solaar_path:
-            # Prioritize previously confirmed Solaar name to eliminate trial-and-error delays
             candidate_solaar_names = []
             if dev._confirmed_solaar_name:
                 candidate_solaar_names.append(dev._confirmed_solaar_name)
@@ -565,16 +542,38 @@ class HIDPPMaster:
                     if alias not in candidate_solaar_names:
                         candidate_solaar_names.append(alias)
 
-            for s_name in candidate_solaar_names:
-                try:
-                    cmd = [self._solaar_path, "config", s_name, "change-host", str(target_channel)]
-                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
-                    if res.returncode == 0:
-                        dev._confirmed_solaar_name = s_name  # Cache working alias for instant future switches
-                        print(f"[HID++] Solaar switched '{dev.name}' (as '{s_name}') -> Channel {target_channel}")
-                        return True
-                except Exception:
-                    pass
+            # Try both "Host X" (unambiguous NamedInt) and "X"
+            for host_arg in [f"Host {target_channel}", str(target_channel)]:
+                for s_name in candidate_solaar_names:
+                    try:
+                        cmd = [self._solaar_path, "config", s_name, "change-host", host_arg]
+                        res = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+                        if res.returncode == 0:
+                            dev._confirmed_solaar_name = s_name
+                            print(f"[HID++] Solaar switched '{dev.name}' (as '{s_name}') -> Channel {target_channel} ({host_arg})")
+                            return True
+                    except Exception:
+                        pass
+
+        # --- METHOD 2: Direct Linux /dev/hidraw writes ---
+        if sys.platform.startswith("linux") and dev.all_paths:
+            candidate_nodes = [p.decode("utf-8") for p in dev.all_paths if p and p.startswith(b"/dev/hidraw")]
+            if candidate_nodes:
+                for dev_node in candidate_nodes:
+                    for d_idx in (dev.device_index, 0x00, 0xFF):
+                        try:
+                            pkt = bytes([0x11, d_idx, feat_idx, 0x10, channel_index] + [0x00] * 15)
+                            fd = os.open(dev_node, os.O_WRONLY | os.O_NONBLOCK)
+                            try:
+                                os.write(fd, pkt)
+                                success = True
+                            finally:
+                                os.close(fd)
+                        except Exception:
+                            pass
+                if success:
+                    print(f"[HID++] Sent direct hidraw write for '{dev.name}' -> Channel {target_channel} (Index: {channel_index})")
+                    return True
 
         # --- SPEED OPTIMIZATION 3: Direct hidapi write (Windows & Linux fallback) ---
         target_paths = dev.all_paths if dev.all_paths else ([dev.path] if dev.path else [])
