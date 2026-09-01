@@ -63,7 +63,7 @@ class LogitechDevice:
         self.path = path                       # Primary control path
         self.short_path = short_path           # Short Report path for Unifying (Col01)
         self.all_paths = all_paths or ([path] if path else [])
-        self.solaar_name = solaar_name         # Specific name recognized by Solaar CLI
+        self.solaar_name = solaar_name or name # Codename or identifier recognized by Solaar CLI
         self.transport = transport
         self.device_index = device_index
         self.vid = vid
@@ -106,32 +106,32 @@ class HIDPPMaster:
     def scan_devices(self, target_keywords: Optional[List[str]] = None) -> List[LogitechDevice]:
         """
         Scans for connected Logitech devices across both Bluetooth and Wireless Receivers (Unifying, Bolt).
-        Multi-layered detection ensuring 100% discovery on both Windows and Linux.
+        Multi-layered detection ensuring 100% discovery of both keyboard and mouse.
         """
         found_devices: List[LogitechDevice] = []
         seen_names: Set[str] = set()
 
-        # Layer 1: Solaar CLI on Linux (if available) - highest fidelity for Linux
+        # Layer 1: Solaar CLI on Linux (if available) - robust high-level device resolution
         if sys.platform.startswith("linux") and self._solaar_path:
             solaar_devs = self._scan_solaar_devices(target_keywords)
             for s_dev in solaar_devs:
-                norm_name = self._normalize_name(s_dev.name)
-                if norm_name not in seen_names:
+                norm = self._normalize_name(s_dev.name)
+                if norm not in seen_names:
                     found_devices.append(s_dev)
-                    seen_names.add(norm_name)
+                    seen_names.add(norm)
 
-        # Layer 2: Linux sysfs inspection (/sys/class/hidraw) - reads kernel HID info directly
+        # Layer 2: Linux sysfs inspection (/sys/class/hidraw) - kernel level discovery
         if sys.platform.startswith("linux"):
             sysfs_devs = self._scan_linux_sysfs(target_keywords)
             for s_dev in sysfs_devs:
-                norm_name = self._normalize_name(s_dev.name)
-                if norm_name not in seen_names:
+                norm = self._normalize_name(s_dev.name)
+                if norm not in seen_names:
                     found_devices.append(s_dev)
-                    seen_names.add(norm_name)
+                    seen_names.add(norm)
                 else:
-                    # Enrich existing device with all physical hidraw paths
+                    # Enrich existing device with all discovered physical hidraw paths
                     for existing in found_devices:
-                        if self._normalize_name(existing.name) == norm_name:
+                        if self._normalize_name(existing.name) == norm:
                             for p in s_dev.all_paths:
                                 if p not in existing.all_paths:
                                     existing.all_paths.append(p)
@@ -174,10 +174,10 @@ class HIDPPMaster:
                 transport = self.identify_transport(pid, USAGE_PAGE_RECEIVER, long_path)
                 paired = self._query_receiver_paired_devices(long_path, short_path, pid, transport)
                 for p_dev in paired:
-                    norm_name = self._normalize_name(p_dev.name)
-                    if self._matches_keywords(p_dev.name, target_keywords) and norm_name not in seen_names:
+                    norm = self._normalize_name(p_dev.name)
+                    if self._matches_keywords(p_dev.name, target_keywords) and norm not in seen_names:
                         found_devices.append(p_dev)
-                        seen_names.add(norm_name)
+                        seen_names.add(norm)
 
             # 3b. Direct Bluetooth Devices
             candidate_bt_devices: Dict[str, List[dict]] = {}
@@ -205,21 +205,21 @@ class HIDPPMaster:
                     if not clean_name or clean_name.lower() == "logitech device":
                         clean_name = self._guess_name_from_pid(pid)
 
-                    norm_name = self._normalize_name(clean_name)
-                    if norm_name not in candidate_bt_devices:
-                        candidate_bt_devices[norm_name] = []
-                    candidate_bt_devices[norm_name].append(dev_info)
+                    norm = self._normalize_name(clean_name)
+                    if norm not in candidate_bt_devices:
+                        candidate_bt_devices[norm] = []
+                    candidate_bt_devices[norm].append(dev_info)
 
             # Select best endpoint for each Bluetooth device
-            for norm_name, endpoints in candidate_bt_devices.items():
+            for norm, endpoints in candidate_bt_devices.items():
                 clean_name = endpoints[0].get('product_string', '') or self._guess_name_from_pid(endpoints[0].get('product_id', 0))
                 clean_name = clean_name.replace("_", " ").strip()
                 if not self._matches_keywords(clean_name, target_keywords):
                     continue
-                if norm_name in seen_names:
+                if norm in seen_names:
                     # Append paths to existing device
                     for existing in found_devices:
-                        if self._normalize_name(existing.name) == norm_name:
+                        if self._normalize_name(existing.name) == norm:
                             for ep in endpoints:
                                 p = ep.get('path', b'')
                                 if p and p not in existing.all_paths:
@@ -229,19 +229,20 @@ class HIDPPMaster:
                 best_endpoint = self._select_best_bt_endpoint(clean_name, endpoints)
                 if best_endpoint:
                     found_devices.append(best_endpoint)
-                    seen_names.add(norm_name)
+                    seen_names.add(norm)
 
         self.devices = found_devices
         return found_devices
 
     def _normalize_name(self, name: str) -> str:
         """
-        Normalizes device names for deduplication (e.g. 'Logitech Wireless Mouse MX Master 3' -> 'mx master 3').
+        Normalizes device names for robust deduplication (e.g. 'Logitech MX Keys' -> 'mx keys').
         """
         n = name.lower().replace("_", " ").strip()
         for term in ["logitech", "wireless", "mouse", "keyboard", "bluetooth", "edition"]:
             n = re.sub(rf"\b{term}\b", "", n).strip()
-        return " ".join(n.split())
+        cleaned = " ".join(n.split())
+        return cleaned if cleaned else name.lower().strip()
 
     def _select_best_bt_endpoint(self, name: str, endpoints: List[dict]) -> Optional[LogitechDevice]:
         """
@@ -282,14 +283,14 @@ class HIDPPMaster:
     def _scan_linux_sysfs(self, target_keywords: Optional[List[str]]) -> List[LogitechDevice]:
         """
         Inspects /sys/class/hidraw on Linux to find Logitech devices directly from the kernel.
-        Groups all hidraw nodes belonging to the same physical device.
+        Groups all hidraw nodes belonging to the same physical device without collisions.
         """
         results: List[LogitechDevice] = []
         if not os.path.isdir("/sys/class/hidraw"):
             return results
 
-        # Group by physical device identifier (HID_PHYS or parent sysfs path)
-        devices_by_phys: Dict[str, Dict] = {}
+        # Group by unique device key: (clean_name, pid) to ensure keyboard and mouse never collide
+        devices_grouped: Dict[Tuple[str, int], List[bytes]] = {}
 
         try:
             for hidraw_dir in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
@@ -299,7 +300,6 @@ class HIDPPMaster:
 
                 dev_name = ""
                 bus = ""
-                phys = ""
                 vid = 0
                 pid = 0
 
@@ -309,8 +309,6 @@ class HIDPPMaster:
                             line = line.strip()
                             if line.startswith("HID_NAME="):
                                 dev_name = line.split("=", 1)[1].strip()
-                            elif line.startswith("HID_PHYS="):
-                                phys = line.split("=", 1)[1].strip()
                             elif line.startswith("HID_ID="):
                                 parts = line.split("=", 1)[1].split(":")
                                 if len(parts) >= 3:
@@ -326,30 +324,20 @@ class HIDPPMaster:
                 node_name = os.path.basename(hidraw_dir)
                 dev_path = f"/dev/{node_name}".encode("utf-8")
 
-                # Unique key: either physical address (e.g. bluetooth MAC) or clean device name
-                phys_key = phys or dev_name or f"dev_{pid}"
-                if phys_key not in devices_by_phys:
-                    devices_by_phys[phys_key] = {
-                        "name": dev_name,
-                        "pid": pid,
-                        "paths": []
-                    }
-                devices_by_phys[phys_key]["paths"].append(dev_path)
-
-            for phys_key, data in devices_by_phys.items():
-                dev_name = data["name"]
-                pid = data["pid"]
-                paths = data["paths"]
-
                 clean_name = dev_name.replace("_", " ").strip()
                 if not clean_name:
                     clean_name = self._guess_name_from_pid(pid)
 
-                if self._matches_keywords(clean_name, target_keywords) and paths:
-                    # In Linux hidraw, the higher-numbered hidraw node is typically the HID++ interface
+                group_key = (clean_name, pid)
+                if group_key not in devices_grouped:
+                    devices_grouped[group_key] = []
+                devices_grouped[group_key].append(dev_path)
+
+            for (dev_name, pid), paths in devices_grouped.items():
+                if self._matches_keywords(dev_name, target_keywords) and paths:
                     primary_path = paths[-1]
                     ldev = LogitechDevice(
-                        name=clean_name,
+                        name=dev_name,
                         path=primary_path,
                         transport=TransportType.BLUETOOTH,
                         device_index=0xFF,
@@ -368,66 +356,69 @@ class HIDPPMaster:
 
     def _scan_solaar_devices(self, target_keywords: Optional[List[str]]) -> List[LogitechDevice]:
         """
-        Uses Solaar CLI on Linux to enumerate recognized devices and their Solaar names.
+        Uses Solaar CLI on Linux to accurately enumerate recognized devices and their Solaar codenames.
         """
         results: List[LogitechDevice] = []
         if not self._solaar_path:
             return results
 
         try:
-            res = subprocess.run([self._solaar_path, "show"], capture_output=True, text=True, timeout=3)
-            if res.returncode != 0:
+            res = subprocess.run([self._solaar_path, "show"], capture_output=True, text=True, timeout=4)
+            if res.returncode != 0 or not res.stdout:
                 return results
 
-            devices_data = []
-            current = None
+            # Split output into per-device blocks reliably
+            # Solaar device headers start with 'Device /dev/hidraw...' or '  1: ...' / '  2: ...'
+            raw_blocks = re.split(r'\n(?=Device\s+/dev/hidraw|\s{0,2}\d+:)', res.stdout)
 
-            for line in res.stdout.splitlines():
-                # Device headers in solaar show start without indentation or with '  \d+:'
-                m_sub = re.match(r'^\s*(\d+):\s+(.*)', line)
-                is_root_header = line and not line.startswith(' ') and not line.startswith('\t') and not line.startswith('-')
-                is_indented_header = m_sub and line.startswith('  ') and not line.startswith('   ')
+            for block in raw_blocks:
+                if not block.strip():
+                    continue
 
-                if is_root_header or is_indented_header:
-                    if current and current.get("name"):
-                        devices_data.append(current)
-                    name_part = m_sub.group(2).strip() if is_indented_header else line.strip()
-                    current = {
-                        "name": name_part,
-                        "codename": "",
-                        "is_bt": False,
-                        "can_switch": True  # All modern Easy-Switch devices support change-host
-                    }
-                elif current:
+                codename = None
+                header_name = None
+                is_bt = False
+                has_change_host = False
+
+                for line in block.splitlines():
                     line_s = line.strip()
                     if line_s.startswith("Codename") and ":" in line_s:
-                        current["codename"] = line_s.split(":", 1)[1].strip()
+                        codename = line_s.split(":", 1)[1].strip()
                     elif "Bluetooth" in line_s:
-                        current["is_bt"] = True
+                        is_bt = True
                     elif "1814" in line_s or "CHANGE HOST" in line_s or "change-host" in line_s:
-                        current["can_switch"] = True
+                        has_change_host = True
 
-            if current and current.get("name"):
-                devices_data.append(current)
+                    # Check device header line
+                    m_num = re.match(r'^\s*\d+:\s*(.*)', line)
+                    if m_num:
+                        header_name = m_num.group(1).strip()
+                    elif line.startswith("Device /dev/hidraw"):
+                        is_bt = True
 
-            for d in devices_data:
-                dev_name = d["codename"] or d["name"]
-                solaar_name = d["codename"] or d["name"]
-                if self._matches_keywords(dev_name, target_keywords):
-                    transport = TransportType.BLUETOOTH if d["is_bt"] else TransportType.UNIFYING
-                    ldev = LogitechDevice(
-                        name=dev_name,
-                        path=b"/dev/solaar",
-                        transport=transport,
-                        device_index=0xFF if d["is_bt"] else 0x01,
-                        solaar_name=solaar_name
-                    )
-                    ldev.change_host_feature_index = 0x09
-                    results.append(ldev)
+                dev_name = codename or header_name
+                if dev_name and (has_change_host or self._is_known_easy_switch(dev_name)):
+                    if self._matches_keywords(dev_name, target_keywords):
+                        transport = TransportType.BLUETOOTH if is_bt else TransportType.UNIFYING
+                        ldev = LogitechDevice(
+                            name=dev_name,
+                            path=b"/dev/solaar",
+                            transport=transport,
+                            device_index=0xFF if is_bt else 0x01,
+                            solaar_name=dev_name
+                        )
+                        ldev.change_host_feature_index = 0x09
+                        results.append(ldev)
         except Exception as ex:
             print(f"[HID++] Solaar scan error: {ex}")
 
         return results
+
+    @staticmethod
+    def _is_known_easy_switch(name: str) -> bool:
+        known = ["mx keys", "mx master", "mx anywhere", "pop mouse", "m370", "m720", "triathlon", "k380", "k780"]
+        n_lower = name.lower()
+        return any(k in n_lower for k in known)
 
     @staticmethod
     def _guess_name_from_pid(pid: int) -> str:
@@ -535,7 +526,7 @@ class HIDPPMaster:
         """
         Dynamically discovers the feature index for a given HID++ feature (e.g. 0x1814).
         """
-        if not hid or dev.path == b"/dev/solaar":
+        if not hid or dev.path in (b"/dev/solaar", b"/dev/bluetoothctl"):
             return 0x09
         try:
             h = hid.device()
@@ -574,14 +565,15 @@ class HIDPPMaster:
         """
         channel_index = max(0, min(2, target_channel - 1))
 
-        # --- METHOD 1: Linux Solaar CLI (handles Bluetooth & Receivers with user/daemon permissions) ---
+        # --- METHOD 1: Linux Solaar CLI (handles Bluetooth & Receivers cleanly) ---
         if sys.platform.startswith("linux") and self._solaar_path:
             candidate_solaar_names = []
             if dev.solaar_name:
                 candidate_solaar_names.append(dev.solaar_name)
-            candidate_solaar_names.append(dev.name)
+            if dev.name not in candidate_solaar_names:
+                candidate_solaar_names.append(dev.name)
 
-            # Generate stripped model names (e.g. "Logitech Wireless Mouse MX Master 3" -> "MX Master 3")
+            # Clean name without marketing fluff
             cleaned = dev.name
             for term in ["Logitech", "Wireless", "Mouse", "Keyboard", "Bluetooth", "Edition"]:
                 cleaned = re.sub(rf"\b{term}\b", "", cleaned, flags=re.IGNORECASE).strip()
@@ -591,16 +583,16 @@ class HIDPPMaster:
 
             # Specific known model aliases for Solaar
             name_lower = dev.name.lower()
-            if "mx master 3" in name_lower:
+            if "mx keys" in name_lower:
+                for alias in ["MX Keys", "MX Keys Wireless", "MX Keys S", "MX Keys Mini"]:
+                    if alias not in candidate_solaar_names:
+                        candidate_solaar_names.append(alias)
+            elif "mx master 3" in name_lower:
                 for alias in ["MX Master 3", "MX Master 3S", "MX Master"]:
                     if alias not in candidate_solaar_names:
                         candidate_solaar_names.append(alias)
             elif "mx master" in name_lower:
                 for alias in ["MX Master", "MX Master 3", "MX Master 2S"]:
-                    if alias not in candidate_solaar_names:
-                        candidate_solaar_names.append(alias)
-            elif "mx keys" in name_lower:
-                for alias in ["MX Keys", "MX Keys S", "MX Keys Mini"]:
                     if alias not in candidate_solaar_names:
                         candidate_solaar_names.append(alias)
             elif "m370" in name_lower or "pop" in name_lower:
