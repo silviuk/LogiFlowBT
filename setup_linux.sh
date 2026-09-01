@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "=== LogiFlowBT Linux Setup ==="
+echo "Project location: $PROJECT_DIR"
 
 # 1. Install udev rule for raw HID++ Logitech device access without root
 echo "[1/4] Configuring udev rules for Logitech devices..."
@@ -25,15 +27,20 @@ for cmd in xdotool xclip solaar; do
     fi
 done
 
-# 3. Install Python dependencies
+# 3. Install Python dependencies (supports PEP 668 on modern Linux)
 echo "[3/4] Installing Python requirements..."
-pip3 install --user hidapi customtkinter
+if ! pip3 install --user hidapi customtkinter 2>/dev/null; then
+    echo "  Standard pip install restricted by system (PEP 668); retrying with --break-system-packages..."
+    pip3 install --user --break-system-packages hidapi customtkinter || {
+        echo "  [NOTE] If pip fails, install via package manager: sudo apt install -y python3-hidapi python3-tk"
+    }
+fi
 
-# 4. Create systemd user service
+# 4. Create systemd user service with dynamic project directory
 echo "[4/4] Setting up systemd user service (optional autostart)..."
 SERVICE_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SERVICE_DIR"
-cat << 'EOF' > "$SERVICE_DIR/logiflowbt.service"
+cat << EOF > "$SERVICE_DIR/logiflowbt.service"
 [Unit]
 Description=LogiFlowBT - Logitech Flow over Bluetooth
 After=graphical-session.target
@@ -41,7 +48,7 @@ After=graphical-session.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 -m btsync.app --daemon
-WorkingDirectory=%h/btsync
+WorkingDirectory=$PROJECT_DIR
 Restart=always
 RestartSec=3
 
