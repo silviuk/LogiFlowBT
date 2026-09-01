@@ -1,6 +1,7 @@
 """
 Modern Graphical User Interface for LogiFlowBT built with CustomTkinter.
 Provides a sleek, modern dark/light desktop experience on Windows and Linux.
+Optimized for Linux X11/Wayland with pixel-perfect font and geometry rendering.
 """
 
 import sys
@@ -17,6 +18,21 @@ except ImportError:
 from .config import AppConfig
 from .hidpp import HIDPPMaster, LogitechDevice
 
+IS_LINUX = sys.platform.startswith("linux")
+# On Linux X11, canvas corner masks can cause jagged notch artifacts; use crisp flat geometry
+BTN_RADIUS = 0 if IS_LINUX else 6
+CARD_RADIUS = 0 if IS_LINUX else 8
+
+
+def get_ui_font(size: int, weight: str = "normal") -> ctk.CTkFont:
+    """
+    Returns high-quality anti-aliased font suitable for current OS.
+    Avoids hardcoding 'Segoe UI' on Linux which causes fallback to pixelated bitmap fonts.
+    """
+    if IS_LINUX:
+        return ctk.CTkFont(size=size, weight=weight)
+    return ctk.CTkFont(family="Segoe UI", size=size, weight=weight)
+
 
 class LogiFlowBTGUI:
     def __init__(self, root: ctk.CTk, app_instance=None):
@@ -30,8 +46,8 @@ class LogiFlowBTGUI:
         ctk.set_default_color_theme("blue")
 
         self.root.title("LogiFlowBT - Logitech Flow over Bluetooth & Unifying")
-        self.root.geometry("680x760")
-        self.root.minsize(600, 680)
+        self.root.geometry("700x780")
+        self.root.minsize(620, 700)
 
         self._build_ui()
         self._load_config_values()
@@ -39,11 +55,11 @@ class LogiFlowBTGUI:
 
     def _build_ui(self) -> None:
         # Main container with padding
-        self.main_container = ctk.CTkFrame(self.root, corner_radius=12, fg_color="transparent")
+        self.main_container = ctk.CTkFrame(self.root, corner_radius=CARD_RADIUS, fg_color="transparent")
         self.main_container.pack(fill="both", expand=True, padx=20, pady=20)
 
         # Header Frame
-        header = ctk.CTkFrame(self.main_container, corner_radius=10)
+        header = ctk.CTkFrame(self.main_container, corner_radius=CARD_RADIUS)
         header.pack(fill="x", pady=(0, 15), ipady=8)
 
         title_box = ctk.CTkFrame(header, fg_color="transparent")
@@ -52,14 +68,14 @@ class LogiFlowBTGUI:
         title_lbl = ctk.CTkLabel(
             title_box,
             text="LogiFlowBT",
-            font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold")
+            font=get_ui_font(22, "bold")
         )
         title_lbl.pack(anchor="w")
 
         subtitle_lbl = ctk.CTkLabel(
             title_box,
-            text="Logitech Flow over Bluetooth & Unifying (MX Keys & M370)",
-            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text="Logitech Flow over Bluetooth & Unifying (MX Keys & M370 / MX Master)",
+            font=get_ui_font(12),
             text_color="#9e9e9e"
         )
         subtitle_lbl.pack(anchor="w")
@@ -71,26 +87,28 @@ class LogiFlowBTGUI:
         self.status_badge = ctk.CTkLabel(
             status_box,
             text="STOPPED",
-            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            font=get_ui_font(11, "bold"),
             fg_color="#3e2723",
             text_color="#ef5350",
-            corner_radius=8,
-            width=85,
-            height=26
+            corner_radius=BTN_RADIUS,
+            width=95,
+            height=30
         )
         self.status_badge.pack(side="left", padx=(0, 10))
 
         self.toggle_btn = ctk.CTkButton(
             status_box,
             text="Start Service",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            width=110,
+            font=get_ui_font(12, "bold"),
+            corner_radius=BTN_RADIUS,
+            width=130,
+            height=32,
             command=self._toggle_daemon
         )
         self.toggle_btn.pack(side="right")
 
         # Tabview for modular settings
-        self.tabs = ctk.CTkTabview(self.main_container, corner_radius=10)
+        self.tabs = ctk.CTkTabview(self.main_container, corner_radius=CARD_RADIUS)
         self.tabs.pack(fill="both", expand=True, pady=(0, 15))
 
         self.tab_flow = self.tabs.add("  Screen & Switching  ")
@@ -108,69 +126,91 @@ class LogiFlowBTGUI:
         self.save_btn = ctk.CTkButton(
             bottom_bar,
             text="Save Configuration",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=get_ui_font(13, "bold"),
             fg_color="#2e7d32",
             hover_color="#1b5e20",
+            corner_radius=BTN_RADIUS,
             command=self._save_config,
-            height=36
+            height=38,
+            width=160
         )
         self.save_btn.pack(side="right", padx=5)
 
         self.test_btn = ctk.CTkButton(
             bottom_bar,
             text="Test Switch Channel Now",
-            font=ctk.CTkFont(size=13),
+            font=get_ui_font(13),
+            corner_radius=BTN_RADIUS,
             command=self._test_switch,
-            height=36
+            height=38,
+            width=190
         )
         self.test_btn.pack(side="right", padx=5)
 
     def _build_flow_tab(self, parent) -> None:
         # Easy-Switch Channel Card
-        ch_card = ctk.CTkFrame(parent, corner_radius=10)
+        ch_card = ctk.CTkFrame(parent, corner_radius=CARD_RADIUS)
         ch_card.pack(fill="x", padx=5, pady=8, ipady=5)
 
         ctk.CTkLabel(
             ch_card,
             text="Easy-Switch Channel Mapping",
-            font=ctk.CTkFont(size=14, weight="bold")
+            font=get_ui_font(14, "bold")
         ).pack(anchor="w", padx=15, pady=(10, 8))
 
         row1 = ctk.CTkFrame(ch_card, fg_color="transparent")
-        row1.pack(fill="x", padx=15, pady=4)
-        ctk.CTkLabel(row1, text="This Computer (Current Channel):", font=ctk.CTkFont(size=13)).pack(side="left")
+        row1.pack(fill="x", padx=15, pady=6)
+        ctk.CTkLabel(row1, text="This Computer (Current Channel):", font=get_ui_font(13)).pack(side="left")
         self.my_ch_var = ctk.StringVar(value="Channel 1")
-        self.my_ch_menu = ctk.CTkOptionMenu(row1, variable=self.my_ch_var, values=["Channel 1", "Channel 2", "Channel 3"], width=130)
+        self.my_ch_menu = ctk.CTkOptionMenu(
+            row1,
+            variable=self.my_ch_var,
+            values=["Channel 1", "Channel 2", "Channel 3"],
+            corner_radius=BTN_RADIUS,
+            width=140
+        )
         self.my_ch_menu.pack(side="right")
 
         row2 = ctk.CTkFrame(ch_card, fg_color="transparent")
-        row2.pack(fill="x", padx=15, pady=4)
-        ctk.CTkLabel(row2, text="Partner Computer (Target Channel):", font=ctk.CTkFont(size=13)).pack(side="left")
+        row2.pack(fill="x", padx=15, pady=6)
+        ctk.CTkLabel(row2, text="Partner Computer (Target Channel):", font=get_ui_font(13)).pack(side="left")
         self.target_ch_var = ctk.StringVar(value="Channel 2")
-        self.target_ch_menu = ctk.CTkOptionMenu(row2, variable=self.target_ch_var, values=["Channel 1", "Channel 2", "Channel 3"], width=130)
+        self.target_ch_menu = ctk.CTkOptionMenu(
+            row2,
+            variable=self.target_ch_var,
+            values=["Channel 1", "Channel 2", "Channel 3"],
+            corner_radius=BTN_RADIUS,
+            width=140
+        )
         self.target_ch_menu.pack(side="right")
 
         # Screen Border Trigger Card
-        edge_card = ctk.CTkFrame(parent, corner_radius=10)
+        edge_card = ctk.CTkFrame(parent, corner_radius=CARD_RADIUS)
         edge_card.pack(fill="x", padx=5, pady=8, ipady=5)
 
         ctk.CTkLabel(
             edge_card,
             text="Screen Border Trigger Settings",
-            font=ctk.CTkFont(size=14, weight="bold")
+            font=get_ui_font(14, "bold")
         ).pack(anchor="w", padx=15, pady=(10, 8))
 
         edge_row = ctk.CTkFrame(edge_card, fg_color="transparent")
         edge_row.pack(fill="x", padx=15, pady=6)
-        ctk.CTkLabel(edge_row, text="Trigger Edge (Cursor Crossing):", font=ctk.CTkFont(size=13)).pack(side="left")
+        ctk.CTkLabel(edge_row, text="Trigger Edge (Cursor Crossing):", font=get_ui_font(13)).pack(side="left")
         self.edge_var = ctk.StringVar(value="Right")
-        self.edge_menu = ctk.CTkOptionMenu(edge_row, variable=self.edge_var, values=["Right", "Left", "Top", "Bottom"], width=130)
+        self.edge_menu = ctk.CTkOptionMenu(
+            edge_row,
+            variable=self.edge_var,
+            values=["Right", "Left", "Top", "Bottom"],
+            corner_radius=BTN_RADIUS,
+            width=140
+        )
         self.edge_menu.pack(side="right")
 
         delay_header = ctk.CTkFrame(edge_card, fg_color="transparent")
         delay_header.pack(fill="x", padx=15, pady=(8, 0))
-        ctk.CTkLabel(delay_header, text="Hold Delay (Anti-Accidental Dwell):", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.hold_lbl = ctk.CTkLabel(delay_header, text="250 ms", font=ctk.CTkFont(size=12, weight="bold"), text_color="#64b5f6")
+        ctk.CTkLabel(delay_header, text="Hold Delay (Anti-Accidental Dwell):", font=get_ui_font(13)).pack(side="left")
+        self.hold_lbl = ctk.CTkLabel(delay_header, text="250 ms", font=get_ui_font(12, "bold"), text_color="#64b5f6")
         self.hold_lbl.pack(side="right")
 
         self.hold_slider = ctk.CTkSlider(
@@ -180,12 +220,12 @@ class LogiFlowBTGUI:
             number_of_steps=19,
             command=self._on_hold_slider_change
         )
-        self.hold_slider.pack(fill="x", padx=15, pady=(4, 8))
+        self.hold_slider.pack(fill="x", padx=15, pady=(6, 8))
 
         cd_row = ctk.CTkFrame(edge_card, fg_color="transparent")
         cd_row.pack(fill="x", padx=15, pady=6)
-        ctk.CTkLabel(cd_row, text="Cooldown after switch (ms):", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.cooldown_entry = ctk.CTkEntry(cd_row, width=130, placeholder_text="2500")
+        ctk.CTkLabel(cd_row, text="Cooldown after switch (ms):", font=get_ui_font(13)).pack(side="left")
+        self.cooldown_entry = ctk.CTkEntry(cd_row, width=140, corner_radius=BTN_RADIUS, placeholder_text="2500")
         self.cooldown_entry.pack(side="right")
 
     def _build_devices_tab(self, parent) -> None:
@@ -195,79 +235,83 @@ class LogiFlowBTGUI:
         ctk.CTkLabel(
             top_bar,
             text="Detected Logitech Hardware",
-            font=ctk.CTkFont(size=14, weight="bold")
+            font=get_ui_font(14, "bold")
         ).pack(side="left", anchor="w")
 
         self.rescan_btn = ctk.CTkButton(
             top_bar,
             text="Rescan Devices",
-            width=120,
+            font=get_ui_font(12),
+            corner_radius=BTN_RADIUS,
+            width=130,
             command=self._refresh_devices_async
         )
         self.rescan_btn.pack(side="right")
 
         # Scrollable container for detected devices
-        self.device_list_frame = ctk.CTkScrollableFrame(parent, corner_radius=10, height=260)
+        self.device_list_frame = ctk.CTkScrollableFrame(parent, corner_radius=CARD_RADIUS, height=280)
         self.device_list_frame.pack(fill="both", expand=True, padx=5, pady=5)
 
-        note_box = ctk.CTkFrame(parent, corner_radius=8, fg_color="#1e1e1e")
+        note_box = ctk.CTkFrame(parent, corner_radius=CARD_RADIUS, fg_color="#1e1e1e")
         note_box.pack(fill="x", padx=5, pady=8, ipady=6)
         ctk.CTkLabel(
             note_box,
-            text="Supports Logitech MX Keys, Logitech M370, POP Mouse, M720 Triathlon, MX Master, and any Easy-Switch peripheral across both Bluetooth and Unifying/Bolt receivers.",
-            font=ctk.CTkFont(size=11),
+            text="Supports Logitech MX Keys, M370, POP Mouse, MX Master 3/3S, M720 Triathlon, and all Easy-Switch devices across Bluetooth, Unifying, and Bolt receivers.",
+            font=get_ui_font(11),
             text_color="#b0bec5",
-            wraplength=560
+            wraplength=580
         ).pack(padx=12)
 
     def _build_bt_tab(self, parent) -> None:
-        bt_card = ctk.CTkFrame(parent, corner_radius=10)
+        bt_card = ctk.CTkFrame(parent, corner_radius=CARD_RADIUS)
         bt_card.pack(fill="x", padx=5, pady=8, ipady=5)
 
         ctk.CTkLabel(
             bt_card,
             text="Peer-to-Peer Inter-Host Sync (Zero Local Network)",
-            font=ctk.CTkFont(size=14, weight="bold")
+            font=get_ui_font(14, "bold")
         ).pack(anchor="w", padx=15, pady=(10, 8))
 
         self.p2p_switch = ctk.CTkSwitch(
             bt_card,
             text="Enable Bluetooth RFCOMM Peer Link (Cursor Alignment & Clipboard)",
-            font=ctk.CTkFont(size=13),
+            font=get_ui_font(13),
+            corner_radius=BTN_RADIUS,
             command=self._on_p2p_toggle
         )
         self.p2p_switch.pack(anchor="w", padx=15, pady=8)
 
         mac_row = ctk.CTkFrame(bt_card, fg_color="transparent")
         mac_row.pack(fill="x", padx=15, pady=6)
-        ctk.CTkLabel(mac_row, text="Partner Bluetooth MAC Address:", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.peer_mac_entry = ctk.CTkEntry(mac_row, width=180, placeholder_text="00:11:22:33:44:55")
+        ctk.CTkLabel(mac_row, text="Partner Bluetooth MAC Address:", font=get_ui_font(13)).pack(side="left")
+        self.peer_mac_entry = ctk.CTkEntry(mac_row, width=180, corner_radius=BTN_RADIUS, placeholder_text="00:11:22:33:44:55")
         self.peer_mac_entry.pack(side="right")
 
         port_row = ctk.CTkFrame(bt_card, fg_color="transparent")
         port_row.pack(fill="x", padx=15, pady=6)
-        ctk.CTkLabel(port_row, text="RFCOMM Channel / Port:", font=ctk.CTkFont(size=13)).pack(side="left")
-        self.port_entry = ctk.CTkEntry(port_row, width=80, placeholder_text="4")
+        ctk.CTkLabel(port_row, text="RFCOMM Channel / Port:", font=get_ui_font(13)).pack(side="left")
+        self.port_entry = ctk.CTkEntry(port_row, width=90, corner_radius=BTN_RADIUS, placeholder_text="4")
         self.port_entry.pack(side="right")
 
         self.clip_switch = ctk.CTkSwitch(
             bt_card,
             text="Synchronize text clipboard over Bluetooth upon edge crossing",
-            font=ctk.CTkFont(size=13)
+            font=get_ui_font(13),
+            corner_radius=BTN_RADIUS
         )
         self.clip_switch.pack(anchor="w", padx=15, pady=8)
 
-        desc_box = ctk.CTkFrame(parent, corner_radius=8, fg_color="#1e1e1e")
+        desc_box = ctk.CTkFrame(parent, corner_radius=CARD_RADIUS, fg_color="#1e1e1e")
         desc_box.pack(fill="x", padx=5, pady=8, ipady=6)
         ctk.CTkLabel(
             desc_box,
             text="Autonomous Mode vs Bluetooth Sync:\n"
                  "- Autonomous Mode (Partner MAC empty): Switches hardware whenever cursor reaches the border with ZERO inter-PC connection.\n"
                  "- Bluetooth Sync Mode: Directly pairs the two computers over Bluetooth RFCOMM to align cursor entry height and synchronize clipboard text without Wi-Fi.",
-            font=ctk.CTkFont(size=11),
+            font=get_ui_font(11),
             text_color="#b0bec5",
             justify="left",
-            wraplength=560
+            wraplength=580
         ).pack(padx=12)
 
     def _on_hold_slider_change(self, value: float) -> None:
@@ -343,14 +387,14 @@ class LogiFlowBTGUI:
         if not devs:
             empty_lbl = ctk.CTkLabel(
                 self.device_list_frame,
-                text="No supported Logitech devices detected.\nMake sure MX Keys and M370 are connected.",
-                font=ctk.CTkFont(size=12),
+                text="No supported Logitech devices detected.\nMake sure MX Keys and mouse are connected.",
+                font=get_ui_font(12),
                 text_color="#9e9e9e"
             )
             empty_lbl.pack(pady=30)
         else:
             for d in devs:
-                card = ctk.CTkFrame(self.device_list_frame, corner_radius=8, fg_color="#2b2b2b")
+                card = ctk.CTkFrame(self.device_list_frame, corner_radius=CARD_RADIUS, fg_color="#2b2b2b")
                 card.pack(fill="x", padx=5, pady=4, ipady=4)
 
                 left = ctk.CTkFrame(card, fg_color="transparent")
@@ -359,14 +403,14 @@ class LogiFlowBTGUI:
                 ctk.CTkLabel(
                     left,
                     text=d.name,
-                    font=ctk.CTkFont(size=13, weight="bold")
+                    font=get_ui_font(13, "bold")
                 ).pack(anchor="w")
 
                 f_str = f"0x{d.change_host_feature_index:02x}" if d.change_host_feature_index else "Auto"
                 ctk.CTkLabel(
                     left,
-                    text=f"Slot: 0x{d.device_index:02x} | CHANGE_HOST Feature: {f_str}",
-                    font=ctk.CTkFont(size=11),
+                    text=f"Slot/Index: 0x{d.device_index:02x} | CHANGE_HOST Feature: {f_str}",
+                    font=get_ui_font(11),
                     text_color="#b0bec5"
                 ).pack(anchor="w")
 
@@ -375,11 +419,11 @@ class LogiFlowBTGUI:
                 badge = ctk.CTkLabel(
                     card,
                     text=d.transport.value.upper(),
-                    font=ctk.CTkFont(size=10, weight="bold"),
+                    font=get_ui_font(10, "bold"),
                     fg_color=badge_color,
-                    corner_radius=6,
-                    width=75,
-                    height=22
+                    corner_radius=BTN_RADIUS,
+                    width=85,
+                    height=24
                 )
                 badge.pack(side="right", padx=12)
 
