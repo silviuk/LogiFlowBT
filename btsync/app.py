@@ -48,29 +48,33 @@ class LogiFlowBTApp:
                 on_peer_status_changed=self._handle_peer_status_changed
             )
 
+        # Warm up device cache in background so switches execute with 0ms scan delay
+        import threading
+        threading.Thread(target=lambda: self.hidpp.scan_devices(self.config.devices, force_rescan=True), daemon=True).start()
+
     def _handle_edge_triggered(self, edge: str, x: int, y: int, ratio: float) -> None:
         """
         Called when cursor dwells at the configured screen border.
+        Executes hardware switch instantly with zero blocking.
         """
         print(f"\n[LogiFlowBT] >>> SCREEN BORDER REACHED at ({x}, {y}) (Ratio: {ratio:.2f}) <<<")
-        print(f"[LogiFlowBT] Initiating transfer of MX Keys & M370 to Channel {self.config.target_channel}...")
+        print(f"[LogiFlowBT] Instantly switching MX Keys & mouse to Channel {self.config.target_channel}...")
 
-        clipboard_content = None
-        if self.config.sync_clipboard:
-            clipboard_content = ClipboardManager.get_text()
-            if clipboard_content:
-                print(f"[LogiFlowBT] Captured clipboard text ({len(clipboard_content)} chars)")
-
-        # 1. Notify partner host over Bluetooth if link active
-        if self.bt_link and self.bt_link.is_connected:
-            self.bt_link.notify_switch_out(edge, ratio, clipboard_content)
-            print("[LogiFlowBT] Partner host notified over Bluetooth RFCOMM")
-
-        # 2. Send HID++ CHANGE_HOST command to Logitech devices
+        # 1. Fire hardware switch immediately in parallel
         results = self.hidpp.switch_all_to_channel(self.config.target_channel, self.config.devices)
         for dev_name, success in results.items():
             status = "SUCCESS" if success else "FAILED"
             print(f"[LogiFlowBT] Device '{dev_name}' -> Channel {self.config.target_channel}: {status}")
+
+        # 2. Async notify partner host over Bluetooth link (non-blocking)
+        if self.bt_link and self.bt_link.is_connected:
+            def notify_peer():
+                clipboard_content = None
+                if self.config.sync_clipboard:
+                    clipboard_content = ClipboardManager.get_text()
+                self.bt_link.notify_switch_out(edge, ratio, clipboard_content)
+            import threading
+            threading.Thread(target=notify_peer, daemon=True).start()
 
     def _handle_incoming_switch(self, partner_exit_edge: str, ratio: float, clipboard_text: Optional[str]) -> None:
         """
