@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from enum import Enum
 from typing import List, Dict, Tuple, Optional, Set
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 try:
@@ -86,6 +87,7 @@ class HIDPPMaster:
     def __init__(self):
         self.devices: List[LogitechDevice] = []
         self._cached_devices: List[LogitechDevice] = []
+        self._scan_lock = threading.Lock()
         self._solaar_path = shutil.which("solaar") if sys.platform.startswith("linux") else None
         self._executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="LogiFlow_Switch")
 
@@ -110,36 +112,27 @@ class HIDPPMaster:
         Scans for connected Logitech devices across Bluetooth and Wireless Receivers.
         Results are cached to ensure subsequent switches execute with 0ms scan latency.
         """
-        if self._cached_devices and not force_rescan:
-            return self._cached_devices
+        with self._scan_lock:
+            if self._cached_devices and not force_rescan:
+                return self._cached_devices
 
-        found_devices: List[LogitechDevice] = []
-        seen_names: Set[str] = set()
+            found_devices: List[LogitechDevice] = []
+            seen_names: Set[str] = set()
 
-        # Layer 1: Solaar CLI on Linux (if available) - high-fidelity device codename resolution
-        if sys.platform.startswith("linux") and self._solaar_path:
-            solaar_devs = self._scan_solaar_devices(target_keywords)
-            for s_dev in solaar_devs:
-                norm = self._normalize_name(s_dev.name)
-                if norm not in seen_names:
-                    found_devices.append(s_dev)
-                    seen_names.add(norm)
-
-        # Layer 2: Linux sysfs inspection (/sys/class/hidraw) - kernel level discovery
-        if sys.platform.startswith("linux"):
-            sysfs_devs = self._scan_linux_sysfs(target_keywords)
-            for s_dev in sysfs_devs:
-                norm = self._normalize_name(s_dev.name)
-                if norm not in seen_names:
-                    found_devices.append(s_dev)
-                    seen_names.add(norm)
-                else:
-                    # Enrich existing device with all discovered physical hidraw paths
-                    for existing in found_devices:
-                        if self._normalize_name(existing.name) == norm:
-                            for p in s_dev.all_paths:
-                                if p not in existing.all_paths:
-                                    existing.all_paths.append(p)
+            # Layer 1: Linux sysfs inspection (/sys/class/hidraw) - instant kernel level discovery (0.002s)
+            if sys.platform.startswith("linux"):
+                sysfs_devs = self._scan_linux_sysfs(target_keywords)
+                for s_dev in sysfs_devs:
+                    norm = self._normalize_name(s_dev.name)
+                    if norm not in seen_names:
+                        found_devices.append(s_dev)
+                        seen_names.add(norm)
+                    else:
+                        for existing in found_devices:
+                            if self._normalize_name(existing.name) == norm:
+                                for p in s_dev.all_paths:
+                                    if p not in existing.all_paths:
+                                        existing.all_paths.append(p)
 
         # Layer 3: hidapi enumeration (Cross-Platform Windows & Linux)
         if hid:
@@ -233,6 +226,15 @@ class HIDPPMaster:
                 best_endpoint = self._select_best_bt_endpoint(clean_name, endpoints)
                 if best_endpoint:
                     found_devices.append(best_endpoint)
+                    seen_names.add(norm)
+
+        # Layer 3: Solaar CLI on Linux (only as fallback if sysfs/hidapi found nothing)
+        if not found_devices and sys.platform.startswith("linux") and self._solaar_path:
+            solaar_devs = self._scan_solaar_devices(target_keywords)
+            for s_dev in solaar_devs:
+                norm = self._normalize_name(s_dev.name)
+                if norm not in seen_names:
+                    found_devices.append(s_dev)
                     seen_names.add(norm)
 
         self.devices = found_devices
@@ -392,8 +394,8 @@ class HIDPPMaster:
                         )
                         ldev.change_host_feature_index = 0x09
                         results.append(ldev)
-        except Exception as ex:
-            print(f"[HID++] Solaar scan error: {ex}")
+        except Exception:
+            pass
 
         return results
 
