@@ -1,0 +1,65 @@
+"""
+Configuration management for LogiFlowBT.
+"""
+
+import json
+import os
+from dataclasses import dataclass, field, asdict
+from typing import List, Dict, Optional
+
+DEFAULT_CONFIG_PATH = os.path.expanduser("~/.config/logiflowbt/config.json")
+if os.name == "nt":
+    appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+    DEFAULT_CONFIG_PATH = os.path.join(appdata, "LogiFlowBT", "config.json")
+
+
+@dataclass
+class AppConfig:
+    host_name: str = "Host"
+    my_channel: int = 1         # 1, 2, or 3 (Easy-Switch slot on this PC)
+    target_channel: int = 2     # 1, 2, or 3 (Easy-Switch slot on target PC)
+    trigger_edge: str = "right" # "right", "left", "top", "bottom"
+    entry_edge: str = "left"    # edge where mouse enters on switch back
+    hold_delay_ms: int = 250    # ms cursor must dwell on border
+    cooldown_ms: int = 2500     # ms after switch before new trigger allowed
+    devices: List[str] = field(default_factory=lambda: [
+        "MX Keys",
+        "Keys",
+        "M370",
+        "POP",
+        "Triathlon",
+        "M720",
+        "MX Master",
+        "MX Anywhere",
+        "Mouse"
+    ])
+    device_feature_indices: Dict[str, int] = field(default_factory=dict)
+    use_solaar_on_linux: bool = True
+    
+    # Bluetooth Inter-Host P2P options
+    bt_p2p_enabled: bool = False
+    bt_peer_address: str = ""   # e.g. "00:11:22:33:44:55"
+    bt_rfcomm_port: int = 4     # RFCOMM channel 1-30
+    sync_cursor_position: bool = True
+    sync_clipboard: bool = False
+    
+    log_level: str = "INFO"
+
+    @classmethod
+    def load(cls, path: Optional[str] = None) -> "AppConfig":
+        cfg_path = path or DEFAULT_CONFIG_PATH
+        if os.path.isfile(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+            except Exception as e:
+                print(f"[Config] Error loading {cfg_path}: {e}, using defaults.")
+        return cls()
+
+    def save(self, path: Optional[str] = None) -> None:
+        cfg_path = path or DEFAULT_CONFIG_PATH
+        os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(asdict(self), f, indent=4)
+        print(f"[Config] Configuration saved to {cfg_path}")
