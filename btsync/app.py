@@ -10,7 +10,7 @@ import signal
 import argparse
 from typing import Optional
 
-from .config import AppConfig
+from .config import AppConfig, DEFAULT_CONFIG_PATH
 from .hidpp import HIDPPMaster
 from .edge_detector import ScreenEdgeDetector
 from .cursor_manager import CursorManager
@@ -171,13 +171,58 @@ class LogiFlowBTApp:
         print("[LogiFlowBT] Shutdown complete.")
 
 
+def interactive_configure(config: AppConfig, path: Optional[str] = None) -> None:
+    """
+    Terminal-based setup for headless or non-GUI environments.
+    """
+    cfg_file = path or DEFAULT_CONFIG_PATH
+    print("\n=== LogiFlowBT Terminal Configuration ===")
+    print(f"Config File: {cfg_file}\n")
+
+    # Current channel
+    prompt = f"This computer's Easy-Switch channel [1, 2, or 3] (current: {config.my_channel}): "
+    val = input(prompt).strip()
+    if val in ("1", "2", "3"):
+        config.my_channel = int(val)
+
+    # Target channel
+    prompt = f"Partner computer's Easy-Switch channel [1, 2, or 3] (current: {config.target_channel}): "
+    val = input(prompt).strip()
+    if val in ("1", "2", "3"):
+        config.target_channel = int(val)
+
+    # Trigger edge
+    prompt = f"Trigger edge to switch to partner [right/left/top/bottom] (current: {config.trigger_edge}): "
+    val = input(prompt).strip().lower()
+    if val in ("right", "left", "top", "bottom"):
+        config.trigger_edge = val
+
+    # Hold delay
+    prompt = f"Hold dwell delay in ms [e.g. 250] (current: {config.hold_delay_ms}): "
+    val = input(prompt).strip()
+    if val.isdigit() and int(val) >= 50:
+        config.hold_delay_ms = int(val)
+
+    # Cooldown
+    prompt = f"Cooldown after switch in ms [e.g. 2500] (current: {config.cooldown_ms}): "
+    val = input(prompt).strip()
+    if val.isdigit() and int(val) >= 500:
+        config.cooldown_ms = int(val)
+
+    config.save(cfg_file)
+    print(f"\n[OK] Configuration successfully saved to {cfg_file}")
+    print("You can now start the background service with:")
+    print("  python3 -m btsync.app --daemon\n")
+
+
 def main():
-    parser = argparse.ArgumentParser(description="LogiFlowBT - Logitech Flow over Bluetooth for MX Keys & M370")
+    parser = argparse.ArgumentParser(description="LogiFlowBT - Logitech Flow over Bluetooth & Unifying")
     parser.add_argument("--scan", action="store_true", help="Scan and list connected Logitech devices")
     parser.add_argument("--switch", type=int, choices=[1, 2, 3], help="Immediately switch devices to Channel 1, 2, or 3")
     parser.add_argument("--daemon", action="store_true", help="Run in background daemon mode")
     parser.add_argument("--gui", action="store_true", help="Launch the GUI settings and status window")
-    parser.add_argument("--config", type=str, help="Path to config.json file")
+    parser.add_argument("--setup", "--configure", dest="setup", action="store_true", help="Interactive terminal configuration")
+    parser.add_argument("--config", type=str, help="Path to custom config.json file")
 
     args = parser.parse_args()
     config = AppConfig.load(args.config)
@@ -187,9 +232,30 @@ def main():
         app.scan_devices()
     elif args.switch is not None:
         app.switch_now(args.switch)
+    elif args.setup:
+        interactive_configure(config, args.config)
     elif args.gui:
-        from .gui import launch_gui
-        launch_gui(app)
+        try:
+            from .gui import launch_gui
+            launch_gui(app)
+        except (ImportError, ModuleNotFoundError) as e:
+            print("\n" + "=" * 60)
+            print("[LogiFlowBT] GUI Error: Tkinter is not installed in this Python environment.")
+            print(f"Details: {e}")
+            print("=" * 60)
+            print("\nHow to fix this on your system:")
+            print("  • If using Homebrew on Linux:")
+            print("      brew install python-tk@3.14")
+            print("  • If using Ubuntu / Debian:")
+            print("      sudo apt install -y python3-tk")
+            print("  • If using Fedora:")
+            print("      sudo dnf install -y python3-tkinter")
+            print("  • If using Arch Linux:")
+            print("      sudo pacman -S tk")
+            print("\nTIP: You can also configure everything directly in terminal without GUI:")
+            print("  python3 -m btsync.app --setup")
+            print("=" * 60 + "\n")
+            sys.exit(1)
     else:
         # Default to daemon mode
         app.run()
