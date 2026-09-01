@@ -16,6 +16,7 @@ from .edge_detector import ScreenEdgeDetector
 from .cursor_manager import CursorManager
 from .clipboard import ClipboardManager
 from .bt_link import BluetoothLink
+from .button_sync import ButtonSyncManager
 
 
 class LogiFlowBTApp:
@@ -25,6 +26,7 @@ class LogiFlowBTApp:
         self.cursor_mgr = CursorManager()
         self.bt_link: Optional[BluetoothLink] = None
         self.edge_detector: Optional[ScreenEdgeDetector] = None
+        self.button_sync: Optional[ButtonSyncManager] = None
 
         self._running = False
         self._setup_subsystems()
@@ -47,6 +49,9 @@ class LogiFlowBTApp:
                 on_switch_received=self._handle_incoming_switch,
                 on_peer_status_changed=self._handle_peer_status_changed
             )
+
+        # 3. Easy-Switch Button Sync (syncs mouse when keyboard channel button is pressed)
+        self.button_sync = ButtonSyncManager(self.hidpp, enabled=self.config.sync_easy_switch_buttons)
 
         # Warm up device cache in background so switches execute with 0ms scan delay
         import threading
@@ -159,6 +164,10 @@ class LogiFlowBTApp:
         if self.bt_link:
             self.bt_link.start()
 
+        # Start Easy-Switch button sync
+        if self.button_sync:
+            self.button_sync.start()
+
         # Keep main thread alive
         try:
             while self._running:
@@ -172,6 +181,8 @@ class LogiFlowBTApp:
             self.edge_detector.stop()
         if self.bt_link:
             self.bt_link.stop()
+        if self.button_sync:
+            self.button_sync.stop()
         print("[LogiFlowBT] Shutdown complete.")
 
 
@@ -226,6 +237,7 @@ def main():
     parser.add_argument("--daemon", action="store_true", help="Run in background daemon mode")
     parser.add_argument("--gui", action="store_true", help="Launch the GUI settings and status window")
     parser.add_argument("--setup", "--configure", dest="setup", action="store_true", help="Interactive terminal configuration")
+    parser.add_argument("--sync-buttons", action="store_true", help="Install linked channel rules for keyboard and mouse")
     parser.add_argument("--config", type=str, help="Path to custom config.json file")
 
     args = parser.parse_args()
@@ -236,6 +248,10 @@ def main():
         app.scan_devices()
     elif args.switch is not None:
         app.switch_now(args.switch)
+    elif args.sync_buttons:
+        if app.button_sync:
+            app.button_sync._setup_solaar_rules()
+            print("[LogiFlowBT] Easy-Switch button link rules installed successfully.")
     elif args.setup:
         interactive_configure(config, args.config)
     elif args.gui:
