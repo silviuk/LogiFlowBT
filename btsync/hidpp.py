@@ -88,6 +88,7 @@ class HIDPPMaster:
     def __init__(self):
         self.devices: List[LogitechDevice] = []
         self._cached_devices: List[LogitechDevice] = []
+        self._receiver_slots_cache: Dict[Tuple[int, int], LogitechDevice] = {}
         self._scan_lock = threading.Lock()
         self._solaar_path = shutil.which("solaar") if sys.platform.startswith("linux") else None
         self._executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="LogiFlow_Switch")
@@ -272,17 +273,24 @@ class HIDPPMaster:
         return cleaned if cleaned else name.lower().strip()
 
     def _select_best_bt_endpoint(self, name: str, endpoints: List[dict]) -> Optional[LogitechDevice]:
-        best_dev: Optional[LogitechDevice] = None
         all_paths = [ep.get('path', b'') for ep in endpoints if ep.get('path')]
 
-        for ep in endpoints:
+        # Prioritize Logitech Bluetooth HID++ control endpoint (UP: 0xFF43, U: 0x0202)
+        sorted_endpoints = sorted(
+            endpoints,
+            key=lambda ep: 0 if (ep.get('usage_page') == USAGE_PAGE_BLUETOOTH and ep.get('usage') == 0x0202) else 1
+        )
+
+        for ep in sorted_endpoints:
             path = ep.get('path', b'')
+            if not path:
+                continue
             pid = ep.get('product_id', 0)
             up = ep.get('usage_page', 0)
             u = ep.get('usage', 0)
 
             # Liveness check: verify Bluetooth endpoint can actually be opened (device is connected)
-            if hid and path:
+            if hid:
                 try:
                     h = hid.device()
                     h.open_path(path)
@@ -303,13 +311,9 @@ class HIDPPMaster:
                 all_paths=all_paths
             )
             dev.is_active = True
+            return dev
 
-            if best_dev is None:
-                best_dev = dev
-            if up == USAGE_PAGE_BLUETOOTH and u == 0x0202:
-                return dev
-
-        return best_dev
+        return None
 
     def _scan_linux_sysfs(self, target_keywords: Optional[List[str]]) -> Tuple[List[LogitechDevice], List[bytes]]:
         """
@@ -611,91 +615,120 @@ class HIDPPMaster:
                 h = None
                 time.sleep(0.05)
         if not h:
-            return results
+            # If receiver handle temporarily busy, fall back to known cached receiver devices
+            return [dev for (r_pid, _), dev in self._receiver_slots_cache.items() if r_pid == pid]
 
         try:
+            # 1. Broadcast quick wake-up ping to all 6 slots in parallel (takes ~1ms total)
+            for idx in range(1, 7):
+                try:
+                    h.write([0x11, idx, 0x00, 0x00, 0x00, 0x00] + [0x00] * 14)
+                except Exception:
+                    pass
+            time.sleep(0.02)
+
+            # 2. Query each paired slot
+            active_slots_found = set()
+
             for idx in range(1, 7):
                 dev_name = None
                 ch_feat = 0x09
+                name_feat = 0
 
-                # Method A: HID++ 2.0 Feature 0x0005 (DEVICE_NAME)
-                try:
-                    q_name = [0x11, idx, 0x00, 0x00, 0x00, FEATURE_DEVICE_NAME] + [0x00] * 14
-                    h.write(q_name)
-                    resp = h.read(20, timeout_ms=60)
-                    if resp and resp[4] != 0:
-                        name_feat = resp[4]
-                        h.write([0x11, idx, name_feat, 0x00] + [0x00] * 16)
-                        r_len = h.read(20, timeout_ms=60)
-                        n_len = r_len[4] if r_len and len(r_len) > 4 else 16
-                        h.write([0x11, idx, name_feat, 0x10, 0x00] + [0x00] * 15)
-                        r_name1 = h.read(20, timeout_ms=60)
-                        name_bytes = bytearray(r_name1[4:]) if r_name1 and len(r_name1) > 4 else bytearray()
-                        if n_len > 16:
-                            h.write([0x11, idx, name_feat, 0x10, 0x10] + [0x00] * 15)
-                            r_name2 = h.read(20, timeout_ms=60)
-                            if r_name2 and len(r_name2) > 4:
-                                name_bytes.extend(r_name2[4:])
-                        if n_len > 32:
-                            h.write([0x11, idx, name_feat, 0x10, 0x20] + [0x00] * 15)
-                            r_name3 = h.read(20, timeout_ms=60)
-                            if r_name3 and len(r_name3) > 4:
-                                name_bytes.extend(r_name3[4:])
-                        raw_name = bytes(name_bytes[:n_len]).decode('utf-8', errors='ignore').strip()
-                        clean = ''.join(c for c in raw_name if c.isprintable()).strip()
-                        if clean:
-                            dev_name = clean
-
-                        q_ch = [0x11, idx, 0x00, 0x00, (FEATURE_CHANGE_HOST >> 8) & 0xFF, FEATURE_CHANGE_HOST & 0xFF] + [0x00] * 14
-                        h.write(q_ch)
-                        resp_ch = h.read(20, timeout_ms=60)
-                        if resp_ch and len(resp_ch) > 4 and resp_ch[4] != 0:
-                            ch_feat = resp_ch[4]
-                except Exception:
-                    pass
-
-                # Method B: HID++ 1.0 Register 0xB5 on Col01 Short Path (Unifying)
-                if not dev_name and transport == TransportType.UNIFYING and short_path:
+                # Query Feature 0x0005 (DEVICE_NAME) with up to 2 attempts
+                for attempt in range(2):
                     try:
-                        h_short = hid.device()
-                        h_short.open_path(short_path)
-                        subreg = 0x20 + idx - 1
-                        h_short.write([0x10, 0xFF, 0x83, 0xB5, subreg, 0x00, 0x00])
-                        resp_b5 = h_short.read(7, timeout_ms=60)
-                        if resp_b5 and len(resp_b5) >= 7:
-                            wpid = (resp_b5[5] << 8) | resp_b5[6]
-                            if wpid != 0:
-                                dev_name = self._guess_name_from_pid(wpid)
-                        h_short.close()
+                        h.write([0x11, idx, 0x00, 0x00, 0x00, FEATURE_DEVICE_NAME] + [0x00] * 14)
                     except Exception:
-                        pass
+                        break
 
-                # Verify if device is currently active/connected on receiver
-                is_active = False
+                    deadline = time.time() + 0.10
+                    while time.time() < deadline:
+                        r = h.read(20, timeout_ms=25)
+                        if r and len(r) >= 5 and r[0] == 0x11 and r[1] == idx:
+                            if r[2] == 0x00 and r[4] != 0:
+                                name_feat = r[4]
+                                break
+                            if r[2] == 0xFF:
+                                break
+                    if name_feat:
+                        break
+
+                if not name_feat:
+                    continue
+
+                # Read name length
                 try:
-                    h.write([0x11, idx, 0x00, 0x00, 0x00, 0x00] + [0x00] * 14)
-                    resp_ping = h.read(20, timeout_ms=50)
-                    if resp_ping and len(resp_ping) >= 5 and resp_ping[0] == 0x11 and resp_ping[1] == idx:
-                        is_active = True
+                    h.write([0x11, idx, name_feat, 0x00] + [0x00] * 16)
+                    r_len = None
+                    deadline = time.time() + 0.08
+                    while time.time() < deadline:
+                        r = h.read(20, timeout_ms=25)
+                        if r and len(r) >= 5 and r[0] == 0x11 and r[1] == idx and r[2] == name_feat:
+                            r_len = r
+                            break
+                    n_len = r_len[4] if r_len else 16
+
+                    # Read name chunks
+                    name_bytes = bytearray()
+                    for chunk_offset in [0x00, 0x10, 0x20]:
+                        if chunk_offset >= n_len:
+                            break
+                        h.write([0x11, idx, name_feat, 0x10, chunk_offset] + [0x00] * 15)
+                        deadline = time.time() + 0.08
+                        while time.time() < deadline:
+                            r = h.read(20, timeout_ms=25)
+                            if r and len(r) >= 5 and r[0] == 0x11 and r[1] == idx and r[2] == name_feat:
+                                name_bytes.extend(r[4:])
+                                break
+
+                    raw_name = bytes(name_bytes[:n_len]).decode('utf-8', errors='ignore').strip()
+                    clean = ''.join(c for c in raw_name if c.isprintable()).strip()
+                    if clean:
+                        dev_name = clean
                 except Exception:
                     pass
 
-                if dev_name:
-                    ldev = LogitechDevice(
-                        name=dev_name,
-                        path=long_path,
-                        transport=transport,
-                        device_index=idx,
-                        vid=LOGITECH_VID,
-                        pid=pid,
-                        usage_page=USAGE_PAGE_RECEIVER,
-                        usage=0x0002,
-                        short_path=short_path,
-                        solaar_name=self._derive_solaar_name(dev_name)
-                    )
-                    ldev.change_host_feature_index = ch_feat
-                    ldev.is_active = is_active
-                    results.append(ldev)
+                if not dev_name:
+                    continue
+
+                # Query CHANGE_HOST feature index (0x1814)
+                try:
+                    h.write([0x11, idx, 0x00, 0x00, (FEATURE_CHANGE_HOST >> 8) & 0xFF, FEATURE_CHANGE_HOST & 0xFF] + [0x00] * 14)
+                    deadline = time.time() + 0.08
+                    while time.time() < deadline:
+                        r_ch = h.read(20, timeout_ms=25)
+                        if r_ch and len(r_ch) >= 5 and r_ch[0] == 0x11 and r_ch[1] == idx and r_ch[2] == 0x00:
+                            if r_ch[4] != 0:
+                                ch_feat = r_ch[4]
+                            break
+                except Exception:
+                    pass
+
+                ldev = LogitechDevice(
+                    name=dev_name,
+                    path=long_path,
+                    transport=transport,
+                    device_index=idx,
+                    vid=LOGITECH_VID,
+                    pid=pid,
+                    usage_page=USAGE_PAGE_RECEIVER,
+                    usage=0x0002,
+                    short_path=short_path,
+                    solaar_name=self._derive_solaar_name(dev_name)
+                )
+                ldev.change_host_feature_index = ch_feat
+                ldev.is_active = True
+                results.append(ldev)
+                active_slots_found.add(idx)
+                self._receiver_slots_cache[(pid, idx)] = ldev
+
+            # Retain any previously known slot on this receiver if temporarily asleep
+            for (r_pid, slot_idx), cached_dev in self._receiver_slots_cache.items():
+                if r_pid == pid and slot_idx not in active_slots_found:
+                    cached_dev.path = long_path
+                    results.append(cached_dev)
+
         finally:
             try:
                 h.close()
