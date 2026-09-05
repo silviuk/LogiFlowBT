@@ -200,7 +200,7 @@ class HIDPPMaster:
                     paired = self._query_receiver_paired_devices(long_path, short_path, pid, transport)
                     for p_dev in paired:
                         norm = self._normalize_name(p_dev.name)
-                        if self._matches_keywords(p_dev.name, target_keywords) and norm not in seen_names:
+                        if self._matches_keywords(p_dev.name, target_keywords):
                             found_devices.append(p_dev)
                             seen_names.add(norm)
 
@@ -239,19 +239,26 @@ class HIDPPMaster:
                     clean_name = clean_name.replace("_", " ").strip()
                     if not self._matches_keywords(clean_name, target_keywords):
                         continue
-                    if norm in seen_names:
-                        for existing in found_devices:
-                            if self._normalize_name(existing.name) == norm:
-                                for ep in endpoints:
-                                    p = ep.get('path', b'')
-                                    if p and p not in existing.all_paths:
-                                        existing.all_paths.append(p)
-                        continue
 
+                    # Select active Bluetooth endpoint
                     best_endpoint = self._select_best_bt_endpoint(clean_name, endpoints)
                     if best_endpoint:
-                        found_devices.append(best_endpoint)
-                        seen_names.add(norm)
+                        if norm in seen_names:
+                            # If device was previously added from receiver but is currently active on Bluetooth, update to Bluetooth
+                            for i, existing in enumerate(found_devices):
+                                if self._normalize_name(existing.name) == norm:
+                                    if getattr(existing, 'is_active', False) is False:
+                                        found_devices[i] = best_endpoint
+                                    else:
+                                        # Enrich paths
+                                        for ep in endpoints:
+                                            p = ep.get('path', b'')
+                                            if p and p not in existing.all_paths:
+                                                existing.all_paths.append(p)
+                                    break
+                        else:
+                            found_devices.append(best_endpoint)
+                            seen_names.add(norm)
 
             self.devices = found_devices
             self._cached_devices = found_devices
@@ -274,6 +281,16 @@ class HIDPPMaster:
             up = ep.get('usage_page', 0)
             u = ep.get('usage', 0)
 
+            # Liveness check: verify Bluetooth endpoint can actually be opened (device is connected)
+            if hid and path:
+                try:
+                    h = hid.device()
+                    h.open_path(path)
+                    h.close()
+                except Exception:
+                    # Endpoint cannot be opened -> device disconnected from Bluetooth (e.g. switched to Unifying)
+                    continue
+
             dev = LogitechDevice(
                 name=name,
                 path=path,
@@ -285,6 +302,7 @@ class HIDPPMaster:
                 usage=u,
                 all_paths=all_paths
             )
+            dev.is_active = True
 
             if best_dev is None:
                 best_dev = dev
@@ -557,6 +575,18 @@ class HIDPPMaster:
             0xB034: "MX Master 3S",
             0xB023: "MX Master 3",
             0xB025: "MX Anywhere 3",
+            # Wireless PIDs across Unifying & Bolt receivers
+            0x408A: "MX Keys",
+            0x4082: "MX Master 3",
+            0x4090: "MX Master 3S",
+            0x4086: "MX Master 2S",
+            0x406B: "MX Anywhere 2S",
+            0x4091: "MX Anywhere 3",
+            0x405E: "M720 Triathlon",
+            0x4069: "Craft Keyboard",
+            0x4088: "MX Keys Mini",
+            0x407B: "K380 Keyboard",
+            0x4057: "K780 Keyboard",
         }
         return known_pids.get(pid, f"Logitech Device (PID 0x{pid:04X})")
 
@@ -571,10 +601,16 @@ class HIDPPMaster:
     def _query_receiver_paired_devices(self, long_path: bytes, short_path: Optional[bytes],
                                        pid: int, transport: TransportType) -> List[LogitechDevice]:
         results: List[LogitechDevice] = []
-        try:
-            h = hid.device()
-            h.open_path(long_path)
-        except Exception:
+        h = None
+        for _ in range(3):
+            try:
+                h = hid.device()
+                h.open_path(long_path)
+                break
+            except Exception:
+                h = None
+                time.sleep(0.05)
+        if not h:
             return results
 
         try:
@@ -589,13 +625,26 @@ class HIDPPMaster:
                     resp = h.read(20, timeout_ms=60)
                     if resp and resp[4] != 0:
                         name_feat = resp[4]
+                        h.write([0x11, idx, name_feat, 0x00] + [0x00] * 16)
+                        r_len = h.read(20, timeout_ms=60)
+                        n_len = r_len[4] if r_len and len(r_len) > 4 else 16
                         h.write([0x11, idx, name_feat, 0x10, 0x00] + [0x00] * 15)
-                        r_name = h.read(20, timeout_ms=60)
-                        if r_name and len(r_name) > 4:
-                            raw_name = bytes(r_name[4:]).decode('utf-8', errors='ignore').strip()
-                            clean = ''.join(c for c in raw_name if c.isprintable())
-                            if clean:
-                                dev_name = clean
+                        r_name1 = h.read(20, timeout_ms=60)
+                        name_bytes = bytearray(r_name1[4:]) if r_name1 and len(r_name1) > 4 else bytearray()
+                        if n_len > 16:
+                            h.write([0x11, idx, name_feat, 0x10, 0x10] + [0x00] * 15)
+                            r_name2 = h.read(20, timeout_ms=60)
+                            if r_name2 and len(r_name2) > 4:
+                                name_bytes.extend(r_name2[4:])
+                        if n_len > 32:
+                            h.write([0x11, idx, name_feat, 0x10, 0x20] + [0x00] * 15)
+                            r_name3 = h.read(20, timeout_ms=60)
+                            if r_name3 and len(r_name3) > 4:
+                                name_bytes.extend(r_name3[4:])
+                        raw_name = bytes(name_bytes[:n_len]).decode('utf-8', errors='ignore').strip()
+                        clean = ''.join(c for c in raw_name if c.isprintable()).strip()
+                        if clean:
+                            dev_name = clean
 
                         q_ch = [0x11, idx, 0x00, 0x00, (FEATURE_CHANGE_HOST >> 8) & 0xFF, FEATURE_CHANGE_HOST & 0xFF] + [0x00] * 14
                         h.write(q_ch)
@@ -605,18 +654,31 @@ class HIDPPMaster:
                 except Exception:
                     pass
 
-                # Method B: HID++ 1.0 Register 0xB5 (Unifying Paired Device Info)
-                if not dev_name and transport == TransportType.UNIFYING:
+                # Method B: HID++ 1.0 Register 0xB5 on Col01 Short Path (Unifying)
+                if not dev_name and transport == TransportType.UNIFYING and short_path:
                     try:
-                        q_b5 = [0x10, 0xFF, 0x81, 0xB5, idx, 0x00, 0x00]
-                        h.write(q_b5)
-                        resp_b5 = h.read(20, timeout_ms=60)
-                        if resp_b5 and len(resp_b5) >= 9:
-                            wpid = (resp_b5[7] << 8) | resp_b5[8]
+                        h_short = hid.device()
+                        h_short.open_path(short_path)
+                        subreg = 0x20 + idx - 1
+                        h_short.write([0x10, 0xFF, 0x83, 0xB5, subreg, 0x00, 0x00])
+                        resp_b5 = h_short.read(7, timeout_ms=60)
+                        if resp_b5 and len(resp_b5) >= 7:
+                            wpid = (resp_b5[5] << 8) | resp_b5[6]
                             if wpid != 0:
                                 dev_name = self._guess_name_from_pid(wpid)
+                        h_short.close()
                     except Exception:
                         pass
+
+                # Verify if device is currently active/connected on receiver
+                is_active = False
+                try:
+                    h.write([0x11, idx, 0x00, 0x00, 0x00, 0x00] + [0x00] * 14)
+                    resp_ping = h.read(20, timeout_ms=50)
+                    if resp_ping and len(resp_ping) >= 5 and resp_ping[0] == 0x11 and resp_ping[1] == idx:
+                        is_active = True
+                except Exception:
+                    pass
 
                 if dev_name:
                     ldev = LogitechDevice(
@@ -632,6 +694,7 @@ class HIDPPMaster:
                         solaar_name=self._derive_solaar_name(dev_name)
                     )
                     ldev.change_host_feature_index = ch_feat
+                    ldev.is_active = is_active
                     results.append(ldev)
         finally:
             try:
@@ -796,5 +859,15 @@ class HIDPPMaster:
                 results[key] = ok
             except Exception:
                 pass
+
+        # If any device failed to switch (e.g. connection changed between Bluetooth and Unifying),
+        # force a fresh hardware scan and retry on the new transport
+        failed = [dev for dev in devices if not results.get(f"{dev.name} ({dev.transport.value})", False)]
+        if failed:
+            fresh_devices = self.scan_devices(target_keywords, force_rescan=True)
+            for f_dev in fresh_devices:
+                key = f"{f_dev.name} ({f_dev.transport.value})"
+                if not results.get(key, False):
+                    results[key] = self.switch_device_host(f_dev, target_channel)
 
         return results

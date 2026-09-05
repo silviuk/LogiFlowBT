@@ -390,7 +390,7 @@ class LogiFlowBTGUI:
         self.rescan_btn.configure(state="disabled", text="Scanning...")
 
         def worker():
-            devs = self.hidpp.scan_devices(self.config.devices)
+            devs = self.hidpp.scan_devices(self.config.devices, force_rescan=True)
             self.root.after(0, lambda: self._populate_devices(devs))
 
         threading.Thread(target=worker, daemon=True).start()

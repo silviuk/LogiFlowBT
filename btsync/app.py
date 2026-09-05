@@ -108,7 +108,7 @@ class LogiFlowBTApp:
 
     def scan_devices(self) -> None:
         print("\n=== Scanning for Logitech Devices (VID 0x046D) ===")
-        devs = self.hidpp.scan_devices(self.config.devices)
+        devs = self.hidpp.scan_devices(self.config.devices, force_rescan=True)
         if not devs:
             print("No matching Logitech Easy-Switch devices found.")
             print("Make sure MX Keys and M370 are connected via Bluetooth or Bolt/Unifying receiver.")
