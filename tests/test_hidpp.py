@@ -63,3 +63,17 @@ def test_transport_identification():
     assert master.identify_transport(0xC548, 0xFF00, b"path") == TransportType.BOLT
     # Bluetooth Usage Page 0xFF43
     assert master.identify_transport(0xB015, 0xFF43, b"path") == TransportType.BLUETOOTH
+
+
+def test_device_name_normalization_and_matching():
+    master = HIDPPMaster()
+    # Identical variations of M720 mouse
+    assert master._is_same_device_name("Wireless Mouse M720", "M720_Triathlon") is True
+    assert master._is_same_device_name("Logitech M720 Triathlon", "M720 Triathlon") is True
+    # Identical variations of MX Master 3
+    assert master._is_same_device_name("Wireless Mouse MX Master 3", "MX Master 3") is True
+    assert master._is_same_device_name("Logitech Wireless Mouse MX Master 3", "MX_Master_3") is True
+    # Different devices should never match
+    assert master._is_same_device_name("MX Keys", "MX Master 3") is False
+    assert master._is_same_device_name("MX Keys", "M720 Triathlon") is False
+

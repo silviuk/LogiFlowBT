@@ -187,23 +187,36 @@ class HIDPPMaster:
                     up = dev_info.get('usage_page', 0)
                     u = dev_info.get('usage', 0)
                     path = dev_info.get('path', b'')
+                    path_str = str(path).lower()
 
                     if pid in ALL_RECEIVER_PIDS or up == USAGE_PAGE_RECEIVER:
-                        if u == 0x0001:
+                        if (up == USAGE_PAGE_RECEIVER and u == 0x0001) or "col01" in path_str:
                             receivers_col01[pid] = path
-                        elif u == 0x0002 or pid not in receivers_col02:
+                        elif (up == USAGE_PAGE_RECEIVER and u == 0x0002) or "col02" in path_str:
                             receivers_col02[pid] = path
 
                 # Query paired devices on receivers
                 for pid, long_path in receivers_col02.items():
                     short_path = receivers_col01.get(pid)
                     transport = self.identify_transport(pid, USAGE_PAGE_RECEIVER, long_path)
-                    paired = self._query_receiver_paired_devices(long_path, short_path, pid, transport)
+                    paired = self._query_receiver_paired_devices(long_path, short_path, pid, transport, force_rescan=force_rescan)
                     for p_dev in paired:
-                        norm = self._normalize_name(p_dev.name)
-                        if self._matches_keywords(p_dev.name, target_keywords):
+                        if not self._matches_keywords(p_dev.name, target_keywords):
+                            continue
+                        # Check if device already added
+                        existing_idx = None
+                        for i, existing in enumerate(found_devices):
+                            if self._is_same_device_name(existing.name, p_dev.name):
+                                existing_idx = i
+                                break
+                        if existing_idx is not None:
+                            if getattr(p_dev, 'is_active', False) and not getattr(found_devices[existing_idx], 'is_active', False):
+                                found_devices[existing_idx] = p_dev
+                            for p in p_dev.all_paths:
+                                if p not in found_devices[existing_idx].all_paths:
+                                    found_devices[existing_idx].all_paths.append(p)
+                        else:
                             found_devices.append(p_dev)
-                            seen_names.add(norm)
 
                 # Direct Bluetooth Devices
                 candidate_bt_devices: Dict[str, List[dict]] = {}
@@ -244,33 +257,75 @@ class HIDPPMaster:
                     # Select active Bluetooth endpoint
                     best_endpoint = self._select_best_bt_endpoint(clean_name, endpoints)
                     if best_endpoint:
-                        if norm in seen_names:
-                            # If device was previously added from receiver but is currently active on Bluetooth, update to Bluetooth
-                            for i, existing in enumerate(found_devices):
-                                if self._normalize_name(existing.name) == norm:
-                                    if getattr(existing, 'is_active', False) is False:
-                                        found_devices[i] = best_endpoint
-                                    else:
-                                        # Enrich paths
-                                        for ep in endpoints:
-                                            p = ep.get('path', b'')
-                                            if p and p not in existing.all_paths:
-                                                existing.all_paths.append(p)
-                                    break
+                        # Check if this device is already in found_devices (e.g. from receiver)
+                        existing_idx = None
+                        for i, existing in enumerate(found_devices):
+                            if self._is_same_device_name(existing.name, clean_name):
+                                existing_idx = i
+                                break
+
+                        if existing_idx is not None:
+                            # Device is already present. Since best_endpoint is verified active on Bluetooth,
+                            # replace the receiver entry with the active Bluetooth device so it doesn't show up twice!
+                            existing = found_devices[existing_idx]
+                            for p in existing.all_paths:
+                                if p not in best_endpoint.all_paths:
+                                    best_endpoint.all_paths.append(p)
+                            found_devices[existing_idx] = best_endpoint
                         else:
                             found_devices.append(best_endpoint)
-                            seen_names.add(norm)
 
+            # Final deduplication pass: guarantee no single physical device appears twice
+            deduped_devices: List[LogitechDevice] = []
+            for dev in found_devices:
+                dup_idx = None
+                for i, existing in enumerate(deduped_devices):
+                    if self._is_same_device_name(existing.name, dev.name):
+                        dup_idx = i
+                        break
+                if dup_idx is None:
+                    deduped_devices.append(dev)
+                else:
+                    existing = deduped_devices[dup_idx]
+                    if dev.transport == TransportType.BLUETOOTH and existing.transport != TransportType.BLUETOOTH:
+                        for p in existing.all_paths:
+                            if p not in dev.all_paths:
+                                dev.all_paths.append(p)
+                        deduped_devices[dup_idx] = dev
+                    elif getattr(dev, 'is_active', False) and not getattr(existing, 'is_active', False):
+                        for p in existing.all_paths:
+                            if p not in dev.all_paths:
+                                dev.all_paths.append(p)
+                        deduped_devices[dup_idx] = dev
+
+            found_devices = deduped_devices
             self.devices = found_devices
             self._cached_devices = found_devices
             return found_devices
 
     def _normalize_name(self, name: str) -> str:
         n = name.lower().replace("_", " ").strip()
-        for term in ["logitech", "wireless", "mouse", "keyboard", "bluetooth", "edition"]:
+        for term in ["logitech", "wireless", "mouse", "keyboard", "bluetooth", "edition", "multi-device", "multidevice"]:
             n = re.sub(rf"\b{term}\b", "", n).strip()
         cleaned = " ".join(n.split())
         return cleaned if cleaned else name.lower().strip()
+
+    def _is_same_device_name(self, name1: str, name2: str) -> bool:
+        n1 = self._normalize_name(name1)
+        n2 = self._normalize_name(name2)
+        if n1 == n2:
+            return True
+        if n1 in n2 or n2 in n1:
+            return True
+        model_keywords = [
+            "m720", "triathlon", "mx master", "master 3", "master 2", "anywhere",
+            "mx keys", "craft", "k380", "k780", "pop", "m370", "ergo", "lift",
+            "pebble", "g502", "g305", "g903", "gpro"
+        ]
+        for kw in model_keywords:
+            if kw in n1 and kw in n2:
+                return True
+        return False
 
     def _select_best_bt_endpoint(self, name: str, endpoints: List[dict]) -> Optional[LogitechDevice]:
         all_paths = [ep.get('path', b'') for ep in endpoints if ep.get('path')]
@@ -603,7 +658,8 @@ class HIDPPMaster:
         return any(k.lower() in name_lower for k in keywords)
 
     def _query_receiver_paired_devices(self, long_path: bytes, short_path: Optional[bytes],
-                                       pid: int, transport: TransportType) -> List[LogitechDevice]:
+                                       pid: int, transport: TransportType,
+                                       force_rescan: bool = False) -> List[LogitechDevice]:
         results: List[LogitechDevice] = []
         h = None
         for _ in range(3):
@@ -727,7 +783,9 @@ class HIDPPMaster:
             for (r_pid, slot_idx), cached_dev in self._receiver_slots_cache.items():
                 if r_pid == pid and slot_idx not in active_slots_found:
                     cached_dev.path = long_path
-                    results.append(cached_dev)
+                    cached_dev.is_active = False
+                    if not force_rescan:
+                        results.append(cached_dev)
 
         finally:
             try:

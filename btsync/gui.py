@@ -171,22 +171,6 @@ class LogiFlowBTGUI:
         )
         self.my_ch_menu.pack(side="right")
 
-        # Hardware Easy-Switch Button Sync
-        self.sync_btn_switch = ctk.CTkSwitch(
-            ch_card,
-            text="Link Channel Buttons (Keyboard button switches mouse & vice-versa)",
-            font=get_ui_font(12),
-            corner_radius=BTN_RADIUS
-        )
-        self.sync_btn_switch.pack(anchor="w", padx=15, pady=(10, 2))
-
-        ctk.CTkLabel(
-            ch_card,
-            text="Note: Logitech keyboard buttons switch radio state in hardware without host events.",
-            font=get_ui_font(10),
-            text_color="#9e9e9e"
-        ).pack(anchor="w", padx=15, pady=(0, 8))
-
         # Screen Border Channel Routing Card
         edge_card = ctk.CTkFrame(parent, corner_radius=CARD_RADIUS)
         edge_card.pack(fill="x", padx=5, pady=8, ipady=5)
@@ -381,11 +365,6 @@ class LogiFlowBTGUI:
         else:
             self.clip_switch.deselect()
 
-        if self.config.sync_easy_switch_buttons:
-            self.sync_btn_switch.select()
-        else:
-            self.sync_btn_switch.deselect()
-
         self._on_p2p_toggle()
 
     def _save_config(self) -> None:
@@ -411,7 +390,6 @@ class LogiFlowBTGUI:
             self.config.bt_peer_address = self.peer_mac_entry.get().strip()
             self.config.bt_rfcomm_port = int(self.port_entry.get() or "4")
             self.config.sync_clipboard = bool(self.clip_switch.get())
-            self.config.sync_easy_switch_buttons = bool(self.sync_btn_switch.get())
             self.config.save()
 
             if self.app and self.app.edge_detector:

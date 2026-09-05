@@ -51,8 +51,7 @@ class AppConfig:
     bt_rfcomm_port: int = 4     # RFCOMM channel 1-30
     sync_cursor_position: bool = True
     sync_clipboard: bool = False
-    sync_easy_switch_buttons: bool = True  # Auto-switch mouse when keyboard button is pressed and vice versa
-    
+
     log_level: str = "INFO"
 
     def get_target_channel_for_edge(self, edge: str) -> Optional[int]:
