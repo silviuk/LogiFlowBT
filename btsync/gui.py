@@ -171,19 +171,6 @@ class LogiFlowBTGUI:
         )
         self.my_ch_menu.pack(side="right")
 
-        row2 = ctk.CTkFrame(ch_card, fg_color="transparent")
-        row2.pack(fill="x", padx=15, pady=6)
-        ctk.CTkLabel(row2, text="Partner Computer (Target Channel):", font=get_ui_font(13)).pack(side="left")
-        self.target_ch_var = ctk.StringVar(value="Channel 2")
-        self.target_ch_menu = ctk.CTkOptionMenu(
-            row2,
-            variable=self.target_ch_var,
-            values=["Channel 1", "Channel 2", "Channel 3"],
-            corner_radius=BTN_RADIUS,
-            width=140
-        )
-        self.target_ch_menu.pack(side="right")
-
         # Hardware Easy-Switch Button Sync
         self.sync_btn_switch = ctk.CTkSwitch(
             ch_card,
@@ -191,30 +178,57 @@ class LogiFlowBTGUI:
             font=get_ui_font(12),
             corner_radius=BTN_RADIUS
         )
-        self.sync_btn_switch.pack(anchor="w", padx=15, pady=(10, 8))
+        self.sync_btn_switch.pack(anchor="w", padx=15, pady=(10, 2))
 
-        # Screen Border Trigger Card
+        ctk.CTkLabel(
+            ch_card,
+            text="Note: Logitech keyboard buttons switch radio state in hardware without host events.",
+            font=get_ui_font(10),
+            text_color="#9e9e9e"
+        ).pack(anchor="w", padx=15, pady=(0, 8))
+
+        # Screen Border Channel Routing Card
         edge_card = ctk.CTkFrame(parent, corner_radius=CARD_RADIUS)
         edge_card.pack(fill="x", padx=5, pady=8, ipady=5)
 
         ctk.CTkLabel(
             edge_card,
-            text="Screen Border Trigger Settings",
+            text="Screen Border Channel Routing",
             font=get_ui_font(14, "bold")
-        ).pack(anchor="w", padx=15, pady=(10, 8))
+        ).pack(anchor="w", padx=15, pady=(10, 2))
 
-        edge_row = ctk.CTkFrame(edge_card, fg_color="transparent")
-        edge_row.pack(fill="x", padx=15, pady=6)
-        ctk.CTkLabel(edge_row, text="Trigger Edge (Cursor Crossing):", font=get_ui_font(13)).pack(side="left")
-        self.edge_var = ctk.StringVar(value="Right")
-        self.edge_menu = ctk.CTkOptionMenu(
-            edge_row,
-            variable=self.edge_var,
-            values=["Right", "Left", "Top", "Bottom"],
-            corner_radius=BTN_RADIUS,
-            width=140
-        )
-        self.edge_menu.pack(side="right")
+        ctk.CTkLabel(
+            edge_card,
+            text="Select target Easy-Switch channel when cursor reaches each screen border:",
+            font=get_ui_font(11),
+            text_color="#b0bec5"
+        ).pack(anchor="w", padx=15, pady=(0, 8))
+
+        channel_options = ["Disabled", "Channel 1", "Channel 2", "Channel 3"]
+        self.edge_vars = {}
+        self.edge_menus = {}
+
+        border_rows = [
+            ("Left Border", "left"),
+            ("Right Border", "right"),
+            ("Top Border", "top"),
+            ("Bottom Border", "bottom")
+        ]
+        for edge_title, edge_key in border_rows:
+            erow = ctk.CTkFrame(edge_card, fg_color="transparent")
+            erow.pack(fill="x", padx=15, pady=4)
+            ctk.CTkLabel(erow, text=f"{edge_title} (Switch to):", font=get_ui_font(13)).pack(side="left")
+            evar = ctk.StringVar(value="Disabled")
+            menu = ctk.CTkOptionMenu(
+                erow,
+                variable=evar,
+                values=channel_options,
+                corner_radius=BTN_RADIUS,
+                width=140
+            )
+            menu.pack(side="right")
+            self.edge_vars[edge_key] = evar
+            self.edge_menus[edge_key] = menu
 
         delay_header = ctk.CTkFrame(edge_card, fg_color="transparent")
         delay_header.pack(fill="x", padx=15, pady=(8, 0))
@@ -335,8 +349,13 @@ class LogiFlowBTGUI:
 
     def _load_config_values(self) -> None:
         self.my_ch_var.set(f"Channel {self.config.my_channel}")
-        self.target_ch_var.set(f"Channel {self.config.target_channel}")
-        self.edge_var.set(self.config.trigger_edge.capitalize())
+
+        for edge_key, evar in self.edge_vars.items():
+            ch = self.config.get_target_channel_for_edge(edge_key)
+            if ch is not None:
+                evar.set(f"Channel {ch}")
+            else:
+                evar.set("Disabled")
 
         hold_ms = self.config.hold_delay_ms
         self.hold_slider.set(hold_ms)
@@ -372,8 +391,20 @@ class LogiFlowBTGUI:
     def _save_config(self) -> None:
         try:
             self.config.my_channel = int(self.my_ch_var.get().split()[-1])
-            self.config.target_channel = int(self.target_ch_var.get().split()[-1])
-            self.config.trigger_edge = self.edge_var.get().lower()
+            new_edges = {}
+            for edge_key, evar in self.edge_vars.items():
+                val = evar.get()
+                if val == "Disabled":
+                    new_edges[edge_key] = None
+                else:
+                    new_edges[edge_key] = int(val.split()[-1])
+            self.config.edge_channels = new_edges
+
+            active = self.config.get_active_edges()
+            if active:
+                self.config.trigger_edge = active[0]
+                self.config.target_channel = self.config.get_target_channel_for_edge(active[0]) or 2
+
             self.config.hold_delay_ms = int(self.hold_slider.get())
             self.config.cooldown_ms = int(self.cooldown_entry.get() or "2500")
             self.config.bt_p2p_enabled = bool(self.p2p_switch.get())
@@ -382,6 +413,12 @@ class LogiFlowBTGUI:
             self.config.sync_clipboard = bool(self.clip_switch.get())
             self.config.sync_easy_switch_buttons = bool(self.sync_btn_switch.get())
             self.config.save()
+
+            if self.app and self.app.edge_detector:
+                self.app.edge_detector.active_edges = self.config.get_active_edges()
+                self.app.edge_detector.hold_delay_ms = self.config.hold_delay_ms
+                self.app.edge_detector.cooldown_ms = self.config.cooldown_ms
+
             messagebox.showinfo("LogiFlowBT", "Settings successfully saved!")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save settings: {e}")
@@ -445,7 +482,13 @@ class LogiFlowBTGUI:
         self.rescan_btn.configure(state="normal", text="Rescan Devices")
 
     def _test_switch(self) -> None:
-        target = int(self.target_ch_var.get().split()[-1])
+        active_edges = self.config.get_active_edges()
+        target = 2
+        if active_edges:
+            target = self.config.get_target_channel_for_edge(active_edges[0]) or 2
+        elif self.config.target_channel:
+            target = self.config.target_channel
+
         if messagebox.askyesno("Confirm Switch", f"Send switch command for all devices to Channel {target}?"):
             res = self.hidpp.switch_all_to_channel(target, self.config.devices)
             status_text = "\n".join([f"• {k}: {'OK' if v else 'FAILED'}" for k, v in res.items()])

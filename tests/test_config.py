@@ -34,3 +34,21 @@ def test_config_save_load():
         assert loaded.target_channel == 1
         assert loaded.trigger_edge == "left"
         assert loaded.hold_delay_ms == 300
+
+
+def test_multi_edge_channels():
+    cfg = AppConfig(
+        my_channel=2,
+        edge_channels={
+            "left": 1,
+            "right": 3,
+            "top": None,
+            "bottom": None
+        }
+    )
+    assert cfg.get_target_channel_for_edge("left") == 1
+    assert cfg.get_target_channel_for_edge("right") == 3
+    assert cfg.get_target_channel_for_edge("top") is None
+    assert cfg.get_target_channel_for_edge("bottom") is None
+    assert set(cfg.get_active_edges()) == {"left", "right"}
+

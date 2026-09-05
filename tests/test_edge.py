@@ -35,3 +35,24 @@ def test_left_edge_detector():
     assert detector._is_at_edge(0, 500) is True
     assert detector._is_at_edge(1, 500) is True
     assert detector._is_at_edge(10, 500) is False
+
+
+def test_multi_edge_detector():
+    detector = ScreenEdgeDetector(active_edges=["left", "right"])
+    detector._screen_bounds = {"left": 0, "top": 0, "right": 1920, "bottom": 1080}
+
+    # Left edge triggered
+    assert detector._get_triggered_edge(0, 500) == "left"
+    assert detector._get_triggered_edge(2, 500) == "left"
+
+    # Right edge triggered
+    assert detector._get_triggered_edge(1920, 500) == "right"
+    assert detector._get_triggered_edge(1918, 500) == "right"
+
+    # Top/bottom not active
+    assert detector._get_triggered_edge(500, 0) is None
+    assert detector._get_triggered_edge(500, 1080) is None
+
+    # Center of screen
+    assert detector._get_triggered_edge(960, 540) is None
+

@@ -18,10 +18,19 @@ class AppConfig:
     host_name: str = "Host"
     my_channel: int = 1         # 1, 2, or 3 (Easy-Switch slot on this PC)
     target_channel: int = 2     # 1, 2, or 3 (Easy-Switch slot on target PC)
-    trigger_edge: str = "right" # "right", "left", "top", "bottom"
+    trigger_edge: str = "right" # Legacy single trigger edge: "right", "left", "top", "bottom"
     entry_edge: str = "left"    # edge where mouse enters on switch back
     hold_delay_ms: int = 250    # ms cursor must dwell on border
     cooldown_ms: int = 2500     # ms after switch before new trigger allowed
+
+    # Multi-edge channel routing: maps each screen edge to a target channel (1, 2, 3, or None)
+    edge_channels: Dict[str, Optional[int]] = field(default_factory=lambda: {
+        "left": None,
+        "right": 2,
+        "top": None,
+        "bottom": None
+    })
+
     devices: List[str] = field(default_factory=lambda: [
         "MX Keys",
         "Keys",
@@ -45,6 +54,26 @@ class AppConfig:
     sync_easy_switch_buttons: bool = True  # Auto-switch mouse when keyboard button is pressed and vice versa
     
     log_level: str = "INFO"
+
+    def get_target_channel_for_edge(self, edge: str) -> Optional[int]:
+        edge = edge.lower()
+        if self.edge_channels and edge in self.edge_channels:
+            val = self.edge_channels.get(edge)
+            if val is not None:
+                return val
+        if edge == self.trigger_edge.lower():
+            return self.target_channel
+        return None
+
+    def get_active_edges(self) -> List[str]:
+        edges: List[str] = []
+        if self.edge_channels:
+            for e, ch in self.edge_channels.items():
+                if ch is not None:
+                    edges.append(e.lower())
+        if not edges and self.trigger_edge:
+            edges.append(self.trigger_edge.lower())
+        return edges
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "AppConfig":

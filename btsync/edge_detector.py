@@ -27,22 +27,29 @@ if sys.platform == "win32":
 class ScreenEdgeDetector:
     def __init__(self,
                  trigger_edge: str = "right",
+                 active_edges: Optional[List[str]] = None,
                  hold_delay_ms: int = 250,
                  cooldown_ms: int = 2500,
                  on_trigger_callback: Optional[Callable[[str, int, int, float], None]] = None):
         """
         :param trigger_edge: 'right', 'left', 'top', or 'bottom'
+        :param active_edges: List of edges to monitor, e.g. ['left', 'right']
         :param hold_delay_ms: ms cursor must dwell on border before triggering
         :param cooldown_ms: ms after trigger before next detection is accepted
         :param on_trigger_callback: func(edge, x, y, ratio) called when triggered
         """
-        self.trigger_edge = trigger_edge.lower()
+        self.trigger_edge = trigger_edge.lower() if trigger_edge else "right"
+        if active_edges:
+            self.active_edges = [e.lower() for e in active_edges]
+        else:
+            self.active_edges = [self.trigger_edge]
         self.hold_delay_ms = hold_delay_ms
         self.cooldown_ms = cooldown_ms
         self.on_trigger_callback = on_trigger_callback
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._current_edge: Optional[str] = None
         self._hold_start_time: Optional[float] = None
         self._last_trigger_time: float = 0.0
         self._screen_bounds = self._get_screen_bounds()
@@ -140,7 +147,8 @@ class ScreenEdgeDetector:
         self.refresh_screen_bounds()
         self._thread = threading.Thread(target=self._loop, name="EdgeDetectorThread", daemon=True)
         self._thread.start()
-        print(f"[EdgeDetector] Started monitoring '{self.trigger_edge}' edge on bounds {self._screen_bounds}")
+        edges_str = ", ".join(self.active_edges)
+        print(f"[EdgeDetector] Started monitoring edges [{edges_str}] on bounds {self._screen_bounds}")
 
     def stop(self) -> None:
         self._running = False
@@ -148,22 +156,30 @@ class ScreenEdgeDetector:
             self._thread.join(timeout=1.0)
         print("[EdgeDetector] Stopped.")
 
-    def _is_at_edge(self, x: int, y: int) -> bool:
+    def _is_at_edge(self, x: int, y: int, edge: Optional[str] = None) -> bool:
+        target = edge.lower() if edge else self.trigger_edge
         b = self._screen_bounds
         tol = 2  # pixel tolerance margin
-        if self.trigger_edge == "right":
+        if target == "right":
             return x >= (b["right"] - tol)
-        elif self.trigger_edge == "left":
+        elif target == "left":
             return x <= (b["left"] + tol)
-        elif self.trigger_edge == "bottom":
+        elif target == "bottom":
             return y >= (b["bottom"] - tol)
-        elif self.trigger_edge == "top":
+        elif target == "top":
             return y <= (b["top"] + tol)
         return False
 
-    def _calculate_ratio(self, x: int, y: int) -> float:
+    def _get_triggered_edge(self, x: int, y: int) -> Optional[str]:
+        for edge in self.active_edges:
+            if self._is_at_edge(x, y, edge):
+                return edge
+        return None
+
+    def _calculate_ratio(self, x: int, y: int, edge: Optional[str] = None) -> float:
+        target = edge.lower() if edge else self.trigger_edge
         b = self._screen_bounds
-        if self.trigger_edge in ("left", "right"):
+        if target in ("left", "right"):
             h = max(1, b["bottom"] - b["top"])
             return max(0.0, min(1.0, (y - b["top"]) / h))
         else:
@@ -176,30 +192,34 @@ class ScreenEdgeDetector:
             # If in cooldown after a recent switch, wait
             if (now - self._last_trigger_time) * 1000 < self.cooldown_ms:
                 self._hold_start_time = None
+                self._current_edge = None
                 time.sleep(0.05)
                 continue
 
             x, y = self.get_cursor_pos()
-            at_edge = self._is_at_edge(x, y)
+            edge = self._get_triggered_edge(x, y)
 
-            if at_edge:
-                if self._hold_start_time is None:
+            if edge:
+                if self._current_edge != edge:
+                    self._current_edge = edge
                     self._hold_start_time = now
                 else:
                     elapsed_ms = (now - self._hold_start_time) * 1000
                     if elapsed_ms >= self.hold_delay_ms:
-                        # Dwell time met! Fire trigger
-                        ratio = self._calculate_ratio(x, y)
-                        print(f"[EdgeDetector] Edge '{self.trigger_edge}' triggered at ({x}, {y}) ratio={ratio:.2f}")
+                        # Dwell time met! Fire trigger for this edge
+                        ratio = self._calculate_ratio(x, y, edge)
+                        print(f"[EdgeDetector] Edge '{edge}' triggered at ({x}, {y}) ratio={ratio:.2f}")
                         self._last_trigger_time = now
                         self._hold_start_time = None
+                        self._current_edge = None
 
                         if self.on_trigger_callback:
                             try:
-                                self.on_trigger_callback(self.trigger_edge, x, y, ratio)
+                                self.on_trigger_callback(edge, x, y, ratio)
                             except Exception as e:
                                 print(f"[EdgeDetector] Callback error: {e}")
             else:
+                self._current_edge = None
                 self._hold_start_time = None
 
             time.sleep(0.015)  # ~65 Hz polling

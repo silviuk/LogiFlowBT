@@ -32,9 +32,11 @@ class LogiFlowBTApp:
         self._setup_subsystems()
 
     def _setup_subsystems(self) -> None:
-        # 1. Edge detector
+        # 1. Edge detector (monitors all active configured screen borders)
+        active_edges = self.config.get_active_edges()
         self.edge_detector = ScreenEdgeDetector(
             trigger_edge=self.config.trigger_edge,
+            active_edges=active_edges,
             hold_delay_ms=self.config.hold_delay_ms,
             cooldown_ms=self.config.cooldown_ms,
             on_trigger_callback=self._handle_edge_triggered
@@ -59,17 +61,22 @@ class LogiFlowBTApp:
 
     def _handle_edge_triggered(self, edge: str, x: int, y: int, ratio: float) -> None:
         """
-        Called when cursor dwells at the configured screen border.
-        Executes hardware switch instantly with zero blocking.
+        Called when cursor dwells at a configured screen border.
+        Executes hardware switch instantly with zero blocking to that edge's target channel.
         """
-        print(f"\n[LogiFlowBT] >>> SCREEN BORDER REACHED at ({x}, {y}) (Ratio: {ratio:.2f}) <<<")
-        print(f"[LogiFlowBT] Instantly switching MX Keys & mouse to Channel {self.config.target_channel}...")
+        target_channel = self.config.get_target_channel_for_edge(edge)
+        if target_channel is None:
+            print(f"[LogiFlowBT] No target channel configured for edge '{edge}'.")
+            return
+
+        print(f"\n[LogiFlowBT] >>> SCREEN BORDER REACHED: '{edge.upper()}' at ({x}, {y}) (Ratio: {ratio:.2f}) <<<")
+        print(f"[LogiFlowBT] Instantly switching MX Keys & mouse to Channel {target_channel}...")
 
         # 1. Fire hardware switch immediately in parallel
-        results = self.hidpp.switch_all_to_channel(self.config.target_channel, self.config.devices)
+        results = self.hidpp.switch_all_to_channel(target_channel, self.config.devices)
         for dev_name, success in results.items():
             status = "SUCCESS" if success else "FAILED"
-            print(f"[LogiFlowBT] Device '{dev_name}' -> Channel {self.config.target_channel}: {status}")
+            print(f"[LogiFlowBT] Device '{dev_name}' -> Channel {target_channel}: {status}")
 
         # 2. Async notify partner host over Bluetooth link (non-blocking)
         if self.bt_link and self.bt_link.is_connected:
@@ -200,17 +207,24 @@ def interactive_configure(config: AppConfig, path: Optional[str] = None) -> None
     if val in ("1", "2", "3"):
         config.my_channel = int(val)
 
-    # Target channel
-    prompt = f"Partner computer's Easy-Switch channel [1, 2, or 3] (current: {config.target_channel}): "
-    val = input(prompt).strip()
-    if val in ("1", "2", "3"):
-        config.target_channel = int(val)
-
-    # Trigger edge
-    prompt = f"Trigger edge to switch to partner [right/left/top/bottom] (current: {config.trigger_edge}): "
+    # Left edge channel
+    cur_left = config.edge_channels.get("left") if config.edge_channels else None
+    prompt = f"Left screen border channel [1, 2, 3, or 'none' to disable] (current: {cur_left}): "
     val = input(prompt).strip().lower()
-    if val in ("right", "left", "top", "bottom"):
-        config.trigger_edge = val
+    if val in ("1", "2", "3"):
+        config.edge_channels["left"] = int(val)
+    elif val in ("none", "0", "disable", "disabled"):
+        config.edge_channels["left"] = None
+
+    # Right edge channel
+    cur_right = config.edge_channels.get("right") if config.edge_channels else config.target_channel
+    prompt = f"Right screen border channel [1, 2, 3, or 'none' to disable] (current: {cur_right}): "
+    val = input(prompt).strip().lower()
+    if val in ("1", "2", "3"):
+        config.edge_channels["right"] = int(val)
+        config.target_channel = int(val)
+    elif val in ("none", "0", "disable", "disabled"):
+        config.edge_channels["right"] = None
 
     # Hold delay
     prompt = f"Hold dwell delay in ms [e.g. 250] (current: {config.hold_delay_ms}): "
